@@ -31,6 +31,11 @@ func (e *ETL) Run(ctx context.Context) error {
 	if err := e.st.SetDefaultMinSats(ctx, e.minSats); err != nil {
 		return err
 	}
+	if n, err := e.st.PruneBelow(ctx, e.minSats); err != nil {
+		return err
+	} else if n > 0 {
+		slog.Info("pruned low-value index rows", "rows", n, "min_sats", e.minSats)
+	}
 	syncTick := time.NewTicker(e.cfg.SyncInterval)
 	defer syncTick.Stop()
 	seedTick := time.NewTicker(10 * time.Second)
@@ -137,8 +142,13 @@ func (e *ETL) processBlock(ctx context.Context, height int64, hash string) error
 		txRows = append(txRows, store.TxRow{Txid: tx.Txid, Height: height, Ts: blk.Time})
 		outs := make([]store.IndexedOut, 0, len(tx.Vout))
 		for _, vout := range tx.Vout {
-			outRows = append(outRows, store.OutRow{Txid: tx.Txid, Vout: int32(vout.N), Address: vout.ScriptPubKey.Address, ValueSats: btc.Sats(vout.Value)})
-			outs = append(outs, store.IndexedOut{Txid: tx.Txid, Vout: int32(vout.N), Address: vout.ScriptPubKey.Address, ValueSats: btc.Sats(vout.Value)})
+			v := btc.Sats(vout.Value)
+			// below the configured minimum: not indexed, keeps the DB lean
+			if e.minSats > 0 && v < e.minSats {
+				continue
+			}
+			outRows = append(outRows, store.OutRow{Txid: tx.Txid, Vout: int32(vout.N), Address: vout.ScriptPubKey.Address, ValueSats: v})
+			outs = append(outs, store.IndexedOut{Txid: tx.Txid, Vout: int32(vout.N), Address: vout.ScriptPubKey.Address, ValueSats: v})
 		}
 		blockOuts[tx.Txid] = outs
 		for _, vin := range tx.Vin {

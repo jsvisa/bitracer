@@ -278,3 +278,143 @@ a:hover {
   gap: 8px;
   flex: 1;
 }
+
+.graph-canvas {
+  position: relative;
+  flex: 1;
+  min-height: 480px;
+  background: #36393f;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.graph-canvas svg {
+  display: block;
+  cursor: grab;
+}
+
+.graph-canvas g.node,
+.graph-canvas g.edge {
+  cursor: pointer;
+}
+
+.graph-detail {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 400px;
+  max-width: calc(100% - 24px);
+  background: rgba(20, 21, 24, 0.93);
+  border: 1px solid #3d4148;
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 12px;
+  z-index: 5;
+}
+
+.gd-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  letter-spacing: 1px;
+  color: #9aa0a6;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+
+.gd-head button {
+  background: transparent;
+  padding: 0 4px;
+  font-size: 13px;
+}
+
+.gd-row {
+  display: flex;
+  gap: 8px;
+  padding: 2px 0;
+  align-items: baseline;
+}
+
+.gd-row span {
+  color: #9aa0a6;
+  flex: 0 0 64px;
+}
+
+.gd-row b {
+  font-weight: 400;
+  word-break: break-all;
+  color: #e8eaed;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 11.5px;
+}
+
+.graph-detail a {
+  color: #f38a2f;
+  text-decoration: none;
+  display: inline-block;
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.graph-detail a:hover {
+  text-decoration: underline;
+}
+
+.graph-canvas.dragging svg {
+  cursor: grabbing;
+}
+
+.graph-watermark {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 72px;
+  font-weight: 700;
+  letter-spacing: 6px;
+  color: rgba(255, 255, 255, 0.035);
+  pointer-events: none;
+  user-select: none;
+}
+
+.graph-addr {
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 12.5px;
+  fill: #e8eaed;
+}
+
+.graph-edge-label {
+  font-family: -apple-system, 'Segoe UI', Roboto, sans-serif;
+  pointer-events: none;
+}
+
+.graph-zoom {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  background: rgba(20, 21, 24, 0.85);
+  border-radius: 8px;
+  padding: 3px 6px;
+  font-size: 12px;
+  color: #e8eaed;
+}
+
+.graph-zoom span {
+  min-width: 42px;
+  text-align: center;
+}
+
+.graph-zoom button {
+  background: transparent;
+  padding: 2px 8px;
+  font-size: 14px;
+}
+
+.graph-zoom button:hover {
+  background: #3d4148;
+}

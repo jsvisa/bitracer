@@ -41,7 +41,12 @@ export function App() {
           {selected == null ? (
             <p className="empty">select or create a case</p>
           ) : (
-            <CaseDetail key={selected} id={selected} onChanged={refreshCases} />
+            <CaseDetail
+              key={selected}
+              id={selected}
+              minSats={cases.find((c) => c.id === selected)?.min_sats ?? null}
+              onChanged={refreshCases}
+            />
           )}
         </main>
       </div>
@@ -187,7 +192,7 @@ function NewCaseForm({ onCreated }: { onCreated: (c: Case) => void }) {
 
 type Tab = 'txs' | 'channels' | 'graph' | 'alerts'
 
-function CaseDetail({ id, onChanged }: { id: number; onChanged: () => void }) {
+function CaseDetail({ id, minSats, onChanged }: { id: number; minSats: number | null; onChanged: () => void }) {
   const [tab, setTab] = useState<Tab>('txs')
   const [txs, setTxs] = useState<CaseTx[]>([])
   const [channels, setChannels] = useState<Channel[]>([])
@@ -233,7 +238,7 @@ function CaseDetail({ id, onChanged }: { id: number; onChanged: () => void }) {
       </div>
       {tab === 'txs' && <TxsTab caseId={id} txs={txs} onChanged={refresh} />}
       {tab === 'channels' && <ChannelsTab caseId={id} channels={channels} onChanged={refresh} />}
-      {tab === 'graph' && <GraphTab caseId={id} txs={txs} />}
+      {tab === 'graph' && <GraphTab caseId={id} txs={txs} minSats={minSats} />}
       {tab === 'alerts' && <AlertsTab alerts={alerts} />}
     </div>
   )
@@ -415,18 +420,19 @@ function ChannelsTab({ caseId, channels, onChanged }: { caseId: number; channels
   )
 }
 
-function GraphTab({ caseId, txs }: { caseId: number; txs: CaseTx[] }) {
+function GraphTab({ caseId, txs, minSats }: { caseId: number; txs: CaseTx[]; minSats: number | null }) {
   const [depth, setDepth] = useState(6)
   const [data, setData] = useState<GraphData | null>(null)
   const [err, setErr] = useState('')
   const [loading, setLoading] = useState(false)
+  const threshold = minSats ?? 10_000_000
 
   const load = useCallback(
     async (d: number) => {
       setLoading(true)
       setErr('')
       try {
-        setData(await api.caseGraph(caseId, d))
+        setData(await api.caseGraph(caseId, d, threshold))
       } catch (e) {
         setErr(String(e))
         setData(null)
@@ -434,7 +440,7 @@ function GraphTab({ caseId, txs }: { caseId: number; txs: CaseTx[] }) {
         setLoading(false)
       }
     },
-    [caseId],
+    [caseId, threshold],
   )
 
   useEffect(() => {
@@ -465,6 +471,8 @@ function GraphTab({ caseId, txs }: { caseId: number; txs: CaseTx[] }) {
       {err && <p className="err">{err}</p>}
       {data == null ? (
         <p className="empty">{loading ? 'drawing case fund flow…' : 'no graph data'}</p>
+      ) : data.nodes.length === 0 ? (
+        <p className="empty">no outputs at or above the {(threshold / 1e8).toFixed(2)} BTC threshold</p>
       ) : (
         <GraphView data={data} />
       )}
