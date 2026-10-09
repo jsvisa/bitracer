@@ -51,10 +51,14 @@ func (e *ETL) Run(ctx context.Context) error {
 	defer mempoolTick.Stop()
 	seedTick := time.NewTicker(10 * time.Second)
 	defer seedTick.Stop()
+	resyncTick := time.NewTicker(15 * time.Second)
+	defer resyncTick.Stop()
 
 	if err := e.SyncBlocks(ctx); err != nil {
 		slog.Error("initial sync failed", "err", err)
 	}
+	mempoolFails := 0
+	mempoolDisabled := false
 	for {
 		select {
 		case <-ctx.Done():
@@ -63,9 +67,24 @@ func (e *ETL) Run(ctx context.Context) error {
 			if err := e.SyncBlocks(ctx); err != nil {
 				slog.Error("block sync failed", "err", err)
 			}
+		case <-resyncTick.C:
+			if err := e.SyncBlocks(ctx); err != nil {
+				slog.Error("block sync failed", "err", err)
+			}
 		case <-mempoolTick.C:
+			if mempoolDisabled {
+				continue
+			}
 			if err := e.PollMempool(ctx); err != nil {
-				slog.Error("mempool poll failed", "err", err)
+				mempoolFails++
+				if mempoolFails >= 3 {
+					mempoolDisabled = true
+					slog.Warn("mempool polling disabled after repeated rpc failures (spends will be detected on block sync)", "err", err)
+				} else {
+					slog.Warn("mempool poll failed", "err", err)
+				}
+			} else {
+				mempoolFails = 0
 			}
 		case <-seedTick.C:
 			if err := e.SeedPendingCases(ctx); err != nil {
@@ -418,6 +437,11 @@ func (e *ETL) SeedPendingCases(ctx context.Context) error {
 				continue
 			}
 			height = tx.BlockHeight
+			if height == 0 && tx.BlockHash != "" {
+				if h, err := e.rpc.BlockHeaderHeight(ctx, tx.BlockHash); err == nil {
+					height = h
+				}
+			}
 			for _, vout := range tx.Vout {
 				outs = append(outs, store.IndexedOut{Txid: seed.Txid, Vout: int32(vout.N), Address: vout.ScriptPubKey.Address, ValueSats: btc.Sats(vout.Value)})
 			}

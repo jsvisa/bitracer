@@ -110,6 +110,7 @@ type Block struct {
 
 type Tx struct {
 	Txid        string `json:"txid"`
+	BlockHash   string `json:"blockhash"`
 	BlockHeight int64  `json:"blockheight"`
 	Time        int64  `json:"time"`
 	BlockTime   int64  `json:"blocktime"`
@@ -154,6 +155,20 @@ func (c *Client) RawTx(ctx context.Context, txid string) (*Tx, error) {
 	}
 	tx.Txid = txid
 	return &tx, nil
+}
+
+func (c *Client) BlockHeaderHeight(ctx context.Context, hash string) (int64, error) {
+	raw, err := c.Call(ctx, "getblockheader", hash)
+	if err != nil {
+		return 0, err
+	}
+	var hdr struct {
+		Height int64 `json:"height"`
+	}
+	if err := json.Unmarshal(raw, &hdr); err != nil {
+		return 0, err
+	}
+	return hdr.Height, nil
 }
 
 func (c *Client) WaitForNewBlock(ctx context.Context, timeoutSecs int) error {
