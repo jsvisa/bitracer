@@ -200,9 +200,6 @@ func (s *Slack) Name() string { return "slack" }
 
 func (s *Slack) Send(ctx context.Context, msg Message) error {
 	var b strings.Builder
-	if msg.Txid != "" {
-		fmt.Fprintf(&b, "*tx:* <%s|%s>\n", ExplorerTxURL(msg.Txid), shortTx(msg.Txid))
-	}
 	for _, f := range msg.fields() {
 		v := f[1]
 		if f[0] == "address" {
@@ -214,29 +211,45 @@ func (s *Slack) Send(ctx context.Context, msg Message) error {
 	if headline == "" {
 		headline = msg.Plain()
 	}
+	// Collapse a full 64-char txid in the headline to a linked short form,
+	// and skip the separate tx field when the headline already shows it —
+	// otherwise the txid renders three times in one message.
+	if msg.Txid != "" {
+		link := "<" + ExplorerTxURL(msg.Txid) + "|" + shortTx(msg.Txid) + ">"
+		headline = strings.ReplaceAll(headline, msg.Txid, link)
+		if !strings.Contains(headline, shortTx(msg.Txid)) {
+			fmt.Fprintf(&b, "*tx:* %s\n", link)
+		}
+	}
 	color := "#bf616a"
 	if IsTerminalKind(msg.Kind) {
 		color = "#a3be8c"
 	}
+	// attachment text is the notification fallback only — Slack does not
+	// render it in-app when blocks are present, so no duplicated body.
+	fallback := strings.ReplaceAll(msg.Plain(), msg.Txid, shortTx(msg.Txid))
+	blocks := []any{
+		map[string]any{
+			"type": "header",
+			"text": map[string]string{"type": "plain_text", "text": truncate("bitracer · "+kindLabel(msg), 140)},
+		},
+		map[string]any{
+			"type": "section",
+			"text": map[string]string{"type": "mrkdwn", "text": strings.TrimSpace(headline)},
+		},
+	}
+	if fields := strings.TrimRight(b.String(), "\n"); fields != "" {
+		blocks = append(blocks, map[string]any{
+			"type": "section",
+			"text": map[string]string{"type": "mrkdwn", "text": fields},
+		})
+	}
 	payload := map[string]any{
-		"text": msg.Plain(),
 		"attachments": []any{
 			map[string]any{
-				"color": color,
-				"blocks": []any{
-					map[string]any{
-						"type": "header",
-						"text": map[string]string{"type": "plain_text", "text": truncate("bitracer · "+kindLabel(msg), 140)},
-					},
-					map[string]any{
-						"type": "section",
-						"text": map[string]string{"type": "mrkdwn", "text": strings.TrimSpace(headline)},
-					},
-					map[string]any{
-						"type": "section",
-						"text": map[string]string{"type": "mrkdwn", "text": strings.TrimRight(b.String(), "\n")},
-					},
-				},
+				"color":  color,
+				"text":   fallback,
+				"blocks": blocks,
 			},
 		},
 	}
