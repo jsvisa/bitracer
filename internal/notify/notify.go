@@ -90,6 +90,7 @@ func Build(typ string, raw json.RawMessage) (Notifier, error) {
 	case "slack":
 		var cfg struct {
 			Webhook string `json:"webhook"`
+			Channel string `json:"channel"`
 		}
 		if err := json.Unmarshal(raw, &cfg); err != nil {
 			return nil, fmt.Errorf("slack config: %w", err)
@@ -97,7 +98,7 @@ func Build(typ string, raw json.RawMessage) (Notifier, error) {
 		if cfg.Webhook == "" {
 			return nil, fmt.Errorf("slack config requires webhook")
 		}
-		return NewSlack(cfg.Webhook), nil
+		return NewSlack(cfg.Webhook, cfg.Channel), nil
 	case "telegram":
 		var cfg struct {
 			Token  string `json:"token"`
@@ -175,10 +176,14 @@ func kindLabel(m Message) string {
 }
 
 // Slack renders Block Kit: colored-attachment style with mrkdwn fields
-// and a mempool.space link on the txhash.
-type Slack struct{ webhook string }
+// and a mempool.space link on the txhash. channel overrides the webhook's
+// bound channel (supported by legacy incoming webhooks).
+type Slack struct {
+	webhook string
+	channel string
+}
 
-func NewSlack(webhook string) *Slack { return &Slack{webhook: webhook} }
+func NewSlack(webhook, channel string) *Slack { return &Slack{webhook: webhook, channel: channel} }
 
 func (s *Slack) Name() string { return "slack" }
 
@@ -223,6 +228,9 @@ func (s *Slack) Send(ctx context.Context, msg Message) error {
 				},
 			},
 		},
+	}
+	if s.channel != "" {
+		payload["channel"] = s.channel
 	}
 	return postJSON(ctx, s.webhook, payload)
 }
