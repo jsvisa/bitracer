@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +18,21 @@ import (
 const ExplorerTxBase = "https://mempool.space/tx/"
 
 func ExplorerTxURL(txid string) string { return ExplorerTxBase + txid }
+
+var hexTxRe = regexp.MustCompile(`\b[0-9a-fA-F]{64}\b`)
+
+// shortLabel renders a txid as head...tail (f639...5b80).
+func shortLabel(txid string) string {
+	if len(txid) <= 12 {
+		return txid
+	}
+	return txid[:4] + "..." + txid[len(txid)-4:]
+}
+
+// linkTx renders a txid as a mempool.space link with a short label.
+func linkTx(txid string) string {
+	return "<" + ExplorerTxURL(txid) + "|" + shortLabel(txid) + ">"
+}
 
 type Message struct {
 	Kind      string
@@ -203,7 +219,7 @@ func (s *Slack) Send(ctx context.Context, msg Message) error {
 	for _, f := range msg.fields() {
 		v := f[1]
 		if f[0] == "address" {
-			v = "`" + shortAddr(v) + "`"
+			v = "`" + v + "`"
 		}
 		fmt.Fprintf(&b, "*%s:* %s\n", f[0], v)
 	}
@@ -211,27 +227,21 @@ func (s *Slack) Send(ctx context.Context, msg Message) error {
 	if headline == "" {
 		headline = msg.Plain()
 	}
-	// Collapse a full 64-char txid in the headline to a linked short form,
-	// and skip the separate tx field when the headline already shows it —
-	// otherwise the txid renders three times in one message.
-	if msg.Txid != "" {
-		link := "<" + ExplorerTxURL(msg.Txid) + "|" + shortTx(msg.Txid) + ">"
-		headline = strings.ReplaceAll(headline, msg.Txid, link)
-		if !strings.Contains(headline, shortTx(msg.Txid)) {
-			fmt.Fprintf(&b, "*tx:* %s\n", link)
-		}
+	// Only add a separate tx field when the headline does not already
+	// reference this message's txid (full or short form).
+	if msg.Txid != "" && !strings.Contains(headline, msg.Txid) && !strings.Contains(headline, shortTx(msg.Txid)) {
+		fmt.Fprintf(&b, "*tx:* %s\n", linkTx(msg.Txid))
 	}
+	// Collapse every full txid in the headline to a linked head...tail form.
+	headline = hexTxRe.ReplaceAllStringFunc(headline, func(m string) string {
+		return linkTx(strings.ToLower(m))
+	})
 	color := "#bf616a"
 	if IsTerminalKind(msg.Kind) {
 		color = "#a3be8c"
 	}
-	// One short line as the notification text — Slack renders payload-level
-	// text in-app above the card, and rejects attachments[].text outright
-	// (invalid_attachments) when blocks are present, so keep it payload-level.
-	fallback := fmt.Sprintf("[bitracer] case#%d · %s", msg.CaseID, kindLabel(msg))
-	if msg.Headline != "" {
-		fallback += " — " + strings.ReplaceAll(msg.Headline, msg.Txid, shortTx(msg.Txid))
-	}
+	// No payload-level text: Slack renders it above the card and mashes it
+	// into notifications; the blocks alone carry the whole message.
 	blocks := []any{
 		map[string]any{
 			"type": "header",
@@ -249,7 +259,6 @@ func (s *Slack) Send(ctx context.Context, msg Message) error {
 		})
 	}
 	payload := map[string]any{
-		"text": fallback,
 		"attachments": []any{
 			map[string]any{
 				"color":  color,
