@@ -122,9 +122,31 @@ func (s *Store) ListCaseTxs(ctx context.Context, caseID int64) ([]CaseTx, error)
 	return out, rows.Err()
 }
 
+// DeleteCaseTx removes the tx and resets the case's tracking state in one
+// transaction. watched_outputs has no seed lineage, so the whole case tree is
+// dropped and any remaining case txs are reset to unseeded — the ETL seed loop
+// re-walks them from scratch. This is what makes delete + re-add a clean
+// retrack that re-fires alerts (MarkWatchedSpent only transitions
+// watching→spent once per row).
 func (s *Store) DeleteCaseTx(ctx context.Context, caseID int64, txid string) error {
-	_, err := s.pool.Exec(ctx, `DELETE FROM case_txs WHERE case_id = $1 AND txid = $2`, caseID, txid)
-	return err
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM case_txs WHERE case_id = $1 AND txid = $2`, caseID, txid); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM watched_outputs WHERE case_id = $1`, caseID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE case_txs SET seeded = FALSE WHERE case_id = $1`, caseID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 type CaseSeed struct {
