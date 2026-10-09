@@ -217,17 +217,19 @@ func (s *Store) CountWatched(ctx context.Context, caseID int64) (int64, error) {
 }
 
 type AddressInfo struct {
-	Address string
-	Label   string
-	Source  string
-	IsCEX   bool
+	Address      string
+	Label        string
+	Source       string
+	IsCEX        bool
+	IsTerminal   bool
+	TerminalKind string
 }
 
 func (s *Store) GetAddress(ctx context.Context, addr string) (*AddressInfo, error) {
 	var a AddressInfo
 	err := s.pool.QueryRow(ctx,
-		`SELECT address, label, source, is_cex FROM addresses WHERE address = $1`, addr).
-		Scan(&a.Address, &a.Label, &a.Source, &a.IsCEX)
+		`SELECT address, label, source, is_cex, is_terminal, terminal_kind FROM addresses WHERE address = $1`, addr).
+		Scan(&a.Address, &a.Label, &a.Source, &a.IsCEX, &a.IsTerminal, &a.TerminalKind)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -239,10 +241,46 @@ func (s *Store) GetAddress(ctx context.Context, addr string) (*AddressInfo, erro
 
 func (s *Store) UpsertAddress(ctx context.Context, a AddressInfo) error {
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO addresses (address, label, source, is_cex, checked_at) VALUES ($1, $2, $3, $4, now())
-		 ON CONFLICT (address) DO UPDATE SET label = EXCLUDED.label, source = EXCLUDED.source, is_cex = EXCLUDED.is_cex, checked_at = now()`,
-		a.Address, a.Label, a.Source, a.IsCEX)
+		`INSERT INTO addresses (address, label, source, is_cex, is_terminal, terminal_kind, checked_at) VALUES ($1, $2, $3, $4, $5, $6, now())
+		 ON CONFLICT (address) DO UPDATE SET label = EXCLUDED.label, source = EXCLUDED.source, is_cex = EXCLUDED.is_cex, is_terminal = EXCLUDED.is_terminal, terminal_kind = EXCLUDED.terminal_kind, checked_at = now()`,
+		a.Address, a.Label, a.Source, a.IsCEX, a.IsTerminal, a.TerminalKind)
 	return err
+}
+
+// SetAddressTerminal flags an address as a terminal entity without touching
+// its label; inserts a bare row when the address is unknown so far.
+func (s *Store) SetAddressTerminal(ctx context.Context, addr, kind string) error {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE addresses SET is_terminal = TRUE, terminal_kind = $2, is_cex = is_cex OR $2 = 'cex', checked_at = now()
+		 WHERE address = $1`, addr, kind)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() > 0 {
+		return nil
+	}
+	_, err = s.pool.Exec(ctx,
+		`INSERT INTO addresses (address, label, source, is_cex, is_terminal, terminal_kind, checked_at) VALUES ($1, '', '', $2 = 'cex', TRUE, $2, now())`,
+		addr, kind)
+	return err
+}
+
+func (s *Store) ClearAddressTerminal(ctx context.Context, addr string) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE addresses SET is_terminal = FALSE, terminal_kind = '' WHERE address = $1`, addr)
+	return err
+}
+
+// SetTxTerminal flips every still-watching output of one tx on a case to
+// terminal; returns how many rows flipped.
+func (s *Store) SetTxTerminal(ctx context.Context, caseID int64, txid string) (int64, error) {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE watched_outputs SET status = 'terminal'
+		 WHERE case_id = $1 AND txid = $2 AND status = 'watching'`, caseID, txid)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
 }
 
 type Alert struct {
