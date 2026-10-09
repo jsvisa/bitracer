@@ -178,13 +178,14 @@ func FlipAddressTerminal(ctx context.Context, st *store.Store, addr, kind, entit
 		msg := notify.Message{
 			Kind:      kind,
 			CaseID:    caseID,
-			Headline:  fmt.Sprintf("%.8f BTC reached %s — STOP", btc.SatsToBTC(sum), entity),
+			Headline:  fmt.Sprintf("%.2f BTC reached %s — STOP", btc.SatsToBTC(sum), entity),
 			Entity:    entity,
 			Txid:      txid,
 			Address:   addr,
 			ValueSats: sum,
 			Depth:     depth,
 		}
+		msg.Parking = holdings(ctx, st, caseID)
 		if err := alerts.Emit(ctx, st, store.Alert{
 			CaseID: caseID, Txid: txid, Address: addr,
 			ValueSats: sum, Depth: depth, Kind: kind,
@@ -199,4 +200,19 @@ func short(s string) string {
 		return s
 	}
 	return s[:10] + "…"
+}
+
+// holdings maps the store's per-address fund summary into the message's
+// parking field; errors degrade to no parking line.
+func holdings(ctx context.Context, st *store.Store, caseID int64) []notify.Holding {
+	hs, err := st.CaseHoldings(ctx, caseID)
+	if err != nil {
+		slog.Error("holdings query failed", "case", caseID, "err", err)
+		return nil
+	}
+	out := make([]notify.Holding, len(hs))
+	for i, h := range hs {
+		out[i] = notify.Holding{Address: h.Address, Sats: h.Sats}
+	}
+	return out
 }

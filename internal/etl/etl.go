@@ -249,7 +249,7 @@ func (e *ETL) afterSpend(ctx context.Context, m store.WatchedMatch, spenderTxid 
 	msg := notify.Message{
 		Kind:      kind,
 		CaseID:    m.CaseID,
-		Headline: fmt.Sprintf("%.8f BTC moved %s:%d -> spent by %s",
+		Headline: fmt.Sprintf("%.2f BTC moved %s:%d -> spent by %s",
 			btc.SatsToBTC(m.ValueSats), m.Txid, m.Vout, spenderTxid),
 		Txid:      spenderTxid,
 		Address:   m.Address,
@@ -260,7 +260,23 @@ func (e *ETL) afterSpend(ctx context.Context, m store.WatchedMatch, spenderTxid 
 	return alerts.Emit(ctx, e.st, store.Alert{
 		CaseID: m.CaseID, Txid: spenderTxid, Address: m.Address,
 		ValueSats: m.ValueSats, Depth: m.Depth + 1, Kind: kind,
-	}, msg)
+	}, e.withParking(ctx, m.CaseID, msg))
+}
+
+// withParking attaches the case's current per-address fund summary to an
+// alert message; a failed query degrades to no parking line.
+func (e *ETL) withParking(ctx context.Context, caseID int64, msg notify.Message) notify.Message {
+	hs, err := e.st.CaseHoldings(ctx, caseID)
+	if err != nil {
+		slog.Error("holdings query failed", "case", caseID, "err", err)
+		return msg
+	}
+	parking := make([]notify.Holding, len(hs))
+	for i, h := range hs {
+		parking[i] = notify.Holding{Address: h.Address, Sats: h.Sats}
+	}
+	msg.Parking = parking
+	return msg
 }
 
 func (e *ETL) addWatchedFromTx(ctx context.Context, caseID int64, minSats int64, depthCap, branchCap int32, txid string, outs []store.IndexedOut, depth int32, height int64) error {
@@ -406,7 +422,7 @@ func (e *ETL) markFanout(ctx context.Context, m store.WatchedMatch, spenderTxid 
 	msg := notify.Message{
 		Kind:      "fanout",
 		CaseID:    m.CaseID,
-		Headline: fmt.Sprintf("%.8f BTC spent into fan-out tx %s — STOP (suspected mixer/coinjoin payout, not tracked further)",
+		Headline: fmt.Sprintf("%.2f BTC spent into fan-out tx %s — STOP (suspected mixer/coinjoin payout, not tracked further)",
 			btc.SatsToBTC(m.ValueSats), spenderTxid),
 		Txid:      spenderTxid,
 		Address:   m.Address,
@@ -416,7 +432,7 @@ func (e *ETL) markFanout(ctx context.Context, m store.WatchedMatch, spenderTxid 
 	return alerts.Emit(ctx, e.st, store.Alert{
 		CaseID: m.CaseID, Txid: spenderTxid, Address: m.Address,
 		ValueSats: m.ValueSats, Depth: m.Depth + 1, Kind: "fanout",
-	}, msg)
+	}, e.withParking(ctx, m.CaseID, msg))
 }
 
 func (e *ETL) checkTerminal(ctx context.Context, caseID int64, txid string, vout int32, addr string, sats int64, depth int32) error {
@@ -448,17 +464,17 @@ func (e *ETL) checkTerminal(ctx context.Context, caseID int64, txid string, vout
 	msg := notify.Message{
 		Kind:      kind,
 		CaseID:    caseID,
-		Headline: fmt.Sprintf("%.8f BTC reached %s — STOP", btc.SatsToBTC(sats), name),
-		Entity:   name,
-		Txid:     txid,
-		Address:  addr,
+		Headline:  fmt.Sprintf("%.2f BTC reached %s — STOP", btc.SatsToBTC(sats), name),
+		Entity:    name,
+		Txid:      txid,
+		Address:   addr,
 		ValueSats: sats,
-		Depth:    depth,
+		Depth:     depth,
 	}
 	return alerts.Emit(ctx, e.st, store.Alert{
 		CaseID: caseID, Txid: txid, Address: addr,
 		ValueSats: sats, Depth: depth, Kind: kind,
-	}, msg)
+	}, e.withParking(ctx, caseID, msg))
 }
 
 func (e *ETL) SeedPendingCases(ctx context.Context) error {
@@ -504,7 +520,8 @@ func (e *ETL) SeedPendingCases(ctx context.Context) error {
 			Headline: "now tracking " + seed.Txid,
 			Txid:     seed.Txid,
 		}
-		if err := alerts.Emit(ctx, e.st, store.Alert{CaseID: seed.CaseID, Txid: seed.Txid, Kind: "seed"}, msg); err != nil {
+		if err := alerts.Emit(ctx, e.st, store.Alert{CaseID: seed.CaseID, Txid: seed.Txid, Kind: "seed"},
+			e.withParking(ctx, seed.CaseID, msg)); err != nil {
 			return err
 		}
 		slog.Info("seeded case tx", "case", seed.CaseID, "txid", seed.Txid, "outputs", len(outs))

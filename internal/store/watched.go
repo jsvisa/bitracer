@@ -216,6 +216,35 @@ func (s *Store) CountWatched(ctx context.Context, caseID int64) (int64, error) {
 	return n, err
 }
 
+// Holding is one address's share of a case's parked funds.
+type Holding struct {
+	Address string
+	Sats    int64
+}
+
+// CaseHoldings sums the case's unspent tracked outputs per address — where
+// the funds are parked right now. Covers watching and terminal rows (funds
+// that reached a labeled endpoint still sit there); spent rows are gone.
+func (s *Store) CaseHoldings(ctx context.Context, caseID int64) ([]Holding, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT address, SUM(value_sats) FROM watched_outputs
+		 WHERE case_id = $1 AND address <> '' AND status IN ('watching', 'terminal')
+		 GROUP BY address ORDER BY SUM(value_sats) DESC`, caseID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Holding
+	for rows.Next() {
+		var h Holding
+		if err := rows.Scan(&h.Address, &h.Sats); err != nil {
+			return nil, err
+		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}
+
 // CaseSeedSats returns the largest depth-0 output of a case — the reference
 // for the relative value-decay floor.
 func (s *Store) CaseSeedSats(ctx context.Context, caseID int64) (int64, error) {
