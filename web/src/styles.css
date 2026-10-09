@@ -38,6 +38,40 @@ header h1 {
   font-size: 12px;
 }
 
+.sync {
+  margin-left: auto;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: #9aa5b8;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+}
+
+.sync .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.sync.ok .dot {
+  background: #a3be8c;
+}
+
+.sync.syncing .dot {
+  background: #ebcb8b;
+}
+
+.sync.stale .dot {
+  background: #bf616a;
+}
+
+.sync.stale {
+  color: #d8a2a4;
+}
+
 .layout {
   display: flex;
   flex: 1;

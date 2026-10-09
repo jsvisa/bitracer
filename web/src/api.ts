@@ -57,6 +57,14 @@ export interface GraphData {
   txid: string
 }
 
+export interface SyncStatus {
+  last_height: number
+  last_block_ts: number
+  updated_at: string
+  chain_height: number | null
+  lag_blocks: number | null
+}
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     headers: { 'Content-Type': 'application/json' },
@@ -90,6 +98,8 @@ export const api = {
 
   listAlerts: (caseID?: number) =>
     req<Alert[]>(`/api/alerts?limit=200${caseID ? `&case_id=${caseID}` : ''}`),
+
+  syncStatus: () => req<SyncStatus>('/api/sync'),
 
   graph: (txid: string, depth = 6) =>
     req<GraphData>(`/api/graph?txid=${txid}&depth=${depth}`),

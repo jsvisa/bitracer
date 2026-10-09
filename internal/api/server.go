@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jsvisa/bitracer/internal/btc"
 	"github.com/jsvisa/bitracer/internal/labeler"
@@ -37,6 +38,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/cases/{id}/channels", s.addChannel)
 	mux.HandleFunc("DELETE /api/channels/{id}", s.deleteChannel)
 	mux.HandleFunc("GET /api/alerts", s.listAlerts)
+	mux.HandleFunc("GET /api/sync", s.syncStatus)
 	mux.HandleFunc("GET /api/graph", s.graph)
 	mux.HandleFunc("GET /api/label", s.lookupLabel)
 	mux.HandleFunc("POST /api/cases/{id}/resolve-labels", s.resolveCaseLabels)
@@ -321,6 +323,39 @@ func (s *Server) listAlerts(w http.ResponseWriter, r *http.Request) {
 		alerts = []store.Alert{}
 	}
 	writeJSON(w, http.StatusOK, alerts)
+}
+
+type syncStatusBody struct {
+	LastHeight  int64  `json:"last_height"`
+	LastBlockTs int64  `json:"last_block_ts"`
+	UpdatedAt   string `json:"updated_at"`
+	ChainHeight *int64 `json:"chain_height"`
+	LagBlocks   *int64 `json:"lag_blocks"`
+}
+
+func (s *Server) syncStatus(w http.ResponseWriter, r *http.Request) {
+	st, err := s.st.SyncState(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	body := syncStatusBody{
+		LastHeight: st.LastHeight,
+		UpdatedAt:  st.UpdatedAt.UTC().Format(time.RFC3339),
+	}
+	if ts, err := s.st.BlockTime(r.Context(), st.LastHeight); err == nil {
+		body.LastBlockTs = ts
+	}
+	if info, err := s.rpc.Info(r.Context()); err == nil {
+		h := info.Blocks
+		body.ChainHeight = &h
+		lag := h - st.LastHeight
+		if lag < 0 {
+			lag = 0
+		}
+		body.LagBlocks = &lag
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 func isTxid(s string) bool {

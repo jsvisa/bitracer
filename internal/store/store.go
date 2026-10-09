@@ -130,5 +130,6 @@ var migrateStmts = []string{
 			last_height BIGINT NOT NULL DEFAULT 0,
 			default_min_sats BIGINT NOT NULL DEFAULT 10000000
 		)`,
+	`ALTER TABLE sync_state ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now()`,
 	`INSERT INTO sync_state (id) VALUES (1) ON CONFLICT DO NOTHING`,
 }

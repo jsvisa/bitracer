@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -51,8 +52,32 @@ func (s *Store) LastHeight(ctx context.Context) (int64, error) {
 }
 
 func (s *Store) SetLastHeight(ctx context.Context, height int64) error {
-	_, err := s.pool.Exec(ctx, `UPDATE sync_state SET last_height = $1 WHERE id = 1`, height)
+	_, err := s.pool.Exec(ctx, `UPDATE sync_state SET last_height = $1, updated_at = now() WHERE id = 1`, height)
 	return err
+}
+
+type SyncState struct {
+	LastHeight int64
+	UpdatedAt  time.Time
+}
+
+func (s *Store) SyncState(ctx context.Context) (*SyncState, error) {
+	var st SyncState
+	err := s.pool.QueryRow(ctx, `SELECT last_height, updated_at FROM sync_state WHERE id = 1`).
+		Scan(&st.LastHeight, &st.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &st, nil
+}
+
+func (s *Store) BlockTime(ctx context.Context, height int64) (int64, error) {
+	var ts int64
+	err := s.pool.QueryRow(ctx, `SELECT ts FROM blocks WHERE height = $1`, height).Scan(&ts)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, nil
+	}
+	return ts, err
 }
 
 func (s *Store) DefaultMinSats(ctx context.Context) (int64, error) {
