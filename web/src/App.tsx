@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { api, mempoolTx, type Alert, type Case, type CaseTx, type Channel, type ChannelInput, type GraphData } from './api'
+import { api, mempoolTx, type Alert, type Case, type CaseTx, type Channel, type ChannelInput, type GraphData, type SyncStatus } from './api'
 import { GraphView } from './GraphView'
 
 export function App() {
@@ -19,6 +19,7 @@ export function App() {
       <header>
         <h1>bitracer</h1>
         <span className="sub">stolen funds tracking</span>
+        <SyncBadge />
       </header>
       <div className="layout">
         <aside>
@@ -46,6 +47,51 @@ export function App() {
       </div>
     </div>
   )
+}
+
+const STALE_MS = 30 * 60 * 1000
+
+function SyncBadge() {
+  const [status, setStatus] = useState<SyncStatus | null>(null)
+
+  useEffect(() => {
+    const load = () => api.syncStatus().then(setStatus).catch(() => {})
+    load()
+    const t = setInterval(load, 15000)
+    return () => clearInterval(t)
+  }, [])
+
+  if (!status) return null
+
+  const updatedMs = Date.parse(status.updated_at)
+  const stale = Number.isNaN(updatedMs) || Date.now() - updatedMs > STALE_MS
+  const behind = status.lag_blocks != null && status.lag_blocks > 0
+  const cls = stale ? 'stale' : behind ? 'syncing' : 'ok'
+  const title = stale
+    ? `walker has not advanced since ${status.updated_at}`
+    : `walker last advanced ${status.updated_at}`
+
+  return (
+    <span className={`sync ${cls}`} title={title}>
+      <span className="dot" />
+      <span>
+        synced {status.last_height.toLocaleString()}
+        {status.chain_height != null && ` / ${status.chain_height.toLocaleString()}`}
+        {behind && ` · behind ${status.lag_blocks!.toLocaleString()} blocks`}
+        {status.last_block_ts > 0 && ` · tip ${ago(status.last_block_ts * 1000)} ago`}
+      </span>
+    </span>
+  )
+}
+
+function ago(ts: number): string {
+  const s = Math.max(0, Math.floor((Date.now() - ts) / 1000))
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m`
+  const h = Math.floor(m / 60)
+  if (h < 48) return `${h}h`
+  return `${Math.floor(h / 24)}d`
 }
 
 const channelLabels: Record<string, [string, string]> = {
