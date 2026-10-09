@@ -387,7 +387,6 @@ a:hover {
 
 .graph-edge-label {
   font-family: -apple-system, 'Segoe UI', Roboto, sans-serif;
-  font-size: 13px;
   pointer-events: none;
 }
 

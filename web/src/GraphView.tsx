@@ -80,7 +80,7 @@ const shortTxid = (id: string) => (id.length <= 12 ? id : `${id.slice(0, 10)}…
 function collapse(data: GraphData): { nodes: FlowNode[]; edges: FlowEdge[] } {
   const nodes = new Map<string, FlowNode>()
   const txIn = new Map<string, { from: string; value: number; height: number; time: number }[]>()
-  const txOut = new Map<string, { to: string; value: number; time: number }[]>()
+  const txOut = new Map<string, { to: string; value: number; height: number; time: number }[]>()
   const txSeen = new Set<string>()
 
   for (const n of data.nodes) {
@@ -103,7 +103,7 @@ function collapse(data: GraphData): { nodes: FlowNode[]; edges: FlowEdge[] } {
     if (e.source.startsWith('t:')) {
       txSeen.add(e.source)
       const arr = txOut.get(e.source) || []
-      arr.push({ to: e.target, value: e.value_btc, time: e.time || 0 })
+      arr.push({ to: e.target, value: e.value_btc, height: e.height || 0, time: e.time || 0 })
       txOut.set(e.source, arr)
     } else {
       const arr = txIn.get(e.target) || []
@@ -131,7 +131,7 @@ function collapse(data: GraphData): { nodes: FlowNode[]; edges: FlowEdge[] } {
         highlighted: data.txids.includes(txid),
       })
       for (const o of outs) {
-        edges.push({ id: `${tx}->${o.to}`, source: tx, target: o.to, value: o.value, height: 0, time: o.time, txid })
+        edges.push({ id: `${tx}->${o.to}`, source: tx, target: o.to, value: o.value, height: o.height, time: o.time, txid })
       }
     } else if (outs.length === 0) {
       nodes.set(tx, {
@@ -150,6 +150,8 @@ function collapse(data: GraphData): { nodes: FlowNode[]; edges: FlowEdge[] } {
     } else {
       for (const i of ins) {
         for (const o of outs) {
+          // change returned to the spending address: skip the self-loop
+          if (o.to === i.from) continue
           edges.push({ id: `${i.from}->${o.to}@${tx}`, source: i.from, target: o.to, value: o.value, height: i.height, time: i.time, txid })
         }
       }
