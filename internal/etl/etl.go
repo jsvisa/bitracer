@@ -223,7 +223,7 @@ func (e *ETL) afterSpend(ctx context.Context, m store.WatchedMatch, spenderTxid 
 		Kind:      kind,
 		CaseID:    m.CaseID,
 		Headline: fmt.Sprintf("%.8f BTC moved %s:%d -> spent by %s",
-			btc.SatsToBTC(m.ValueSats), short(m.Txid), m.Vout, short(spenderTxid)),
+			btc.SatsToBTC(m.ValueSats), m.Txid, m.Vout, spenderTxid),
 		Txid:      spenderTxid,
 		Address:   m.Address,
 		ValueSats: m.ValueSats,
@@ -435,13 +435,6 @@ func (e *ETL) catchUpCase(ctx context.Context, caseID int64, minSats int64, dept
 		}
 	}
 	return nil
-}
-
-func short(s string) string {
-	if len(s) <= 12 {
-		return s
-	}
-	return s[:10] + "…"
 }
 
 func heightLabel(h int64) string {
