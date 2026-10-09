@@ -103,7 +103,23 @@ Environment: `DATABASE_URL`, `BTC_RPC_URL`, `BTC_RPC_USER`, `BTC_RPC_PASS`,
 `BITRACER_FANOUT_DENOM` (stop when a spender tx has ≥ N outputs of one exact
 value — the coinjoin/mixer signature; default 5), `BITRACER_FANOUT_ADDRS`
 (stop when a spender tx pays ≥ N distinct addresses; default 0 = off — too
-eager for exchange payout sweeps and thief splits).
+eager for exchange payout sweeps and thief splits), `BITRACER_FANIN_COUNT`
+(stop when ≥ N distinct flows converge on one unlabeled address — the
+service/exchange sink signature; default 5, kind `fanin`),
+`BITRACER_DECAY_PCT` (don't follow branch outputs below this percentage of the
+case's largest seed output; default 1, 0 = off), `BITRACER_SEED_LABELS` (path
+to a JSON file of known entities, inserted without clobbering vendor labels or
+manual pins):
+
+```json
+{
+  "bc1q…mixer-address": { "label": "Known Mixer", "kind": "mixer" },
+  "1A…exchange-hot":    { "label": "Exchange Hot 1", "kind": "cex" },
+  "3C…attributed-only": { "label": "Some Entity", "kind": "" }
+}
+```
+
+Entries with a `kind` are terminal stops; `"kind": ""` is attribution only.
 
 ### Dashboard
 
@@ -152,6 +168,13 @@ lark `{"webhook": "https://open.larksuite.com/open-apis/bot/v2/hook/..."}`.
   mostly unrelated churn, so following it would only explode the branch tree.
   Every stop emits an alert whose kind names the reason
   (`cex`/`mixer`/`service`/`fanout`/...), or at `depth_cap` / `branch_cap`.
+- **Fan-in stop**: when ≥ `BITRACER_FANIN_COUNT` distinct flows converge on
+  one unlabeled address, it is marked terminal (kind `fanin`, red — a
+  suspicion worth reviewing, not a confirmed entity): services and exchange
+  hot wallets are where unrelated flows meet.
+- **Value-decay floor**: branch outputs below `BITRACER_DECAY_PCT` % of the
+  case's largest seed output are not followed, keeping long small-value
+  tails bounded.
 - Reorgs: when the stored block hash at height H mismatches the chain, all
   index/watch data at >= H is reset and re-synced.
 - Spends are detected on block sync only (no mempool polling); alerts arrive
