@@ -57,6 +57,7 @@ export interface GraphEdge {
   value_btc: number
   txid: string
   height: number
+  time?: number
 }
 
 export interface GraphData {
@@ -114,8 +115,10 @@ export const api = {
 
   syncStatus: () => req<SyncStatus>('/api/sync'),
 
-  caseGraph: (id: number, depth = 6) =>
-    req<GraphData>(`/api/graph?case_id=${id}&depth=${depth}`),
+  caseGraph: (id: number, depth = 6, minSats?: number) =>
+    req<GraphData>(
+      `/api/graph?case_id=${id}&depth=${depth}${minSats != null ? `&min_sats=${minSats}` : ''}`,
+    ),
 }
 
 export const satsToBTC = (s: number) => s / 1e8

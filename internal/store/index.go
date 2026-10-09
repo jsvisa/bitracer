@@ -211,6 +211,30 @@ func (s *Store) TxHeight(ctx context.Context, txid string) (int64, error) {
 	return h, err
 }
 
+type TxTime struct {
+	Height int64
+	Ts     int64
+}
+
+func (s *Store) TxTimes(ctx context.Context, txids []string) (map[string]TxTime, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT txid, height, ts FROM txs WHERE txid = ANY($1)`, txids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]TxTime{}
+	for rows.Next() {
+		var id string
+		var t TxTime
+		if err := rows.Scan(&id, &t.Height, &t.Ts); err != nil {
+			return nil, err
+		}
+		out[id] = t
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) ResetFromHeight(ctx context.Context, height int64) error {
 	batch := &pgx.Batch{}
 	batch.Queue(`DELETE FROM watched_outputs WHERE height >= $1`, height)

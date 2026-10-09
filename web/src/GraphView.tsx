@@ -12,7 +12,8 @@ interface FlowNode {
   id: string
   kind: 'address' | 'tx'
   label: string
-  tip: string
+  full: string
+  value: number
   cex: boolean
   cexName: string
   highlighted: boolean
@@ -24,6 +25,7 @@ interface FlowEdge {
   target: string
   value: number
   height: number
+  time: number
   txid: string
 }
 
@@ -47,17 +49,38 @@ interface Layout {
   bbox: { minX: number; minY: number; w: number; h: number }
 }
 
+type Sel = { kind: 'node' | 'edge'; id: string } | null
+
 const fmtBTC = (v: number) =>
   `${v.toFixed(8).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '')} BTC`
 
-const edgeLabel = (e: FlowEdge) => (e.height > 0 ? `[${e.height}] ${fmtBTC(e.value)}` : fmtBTC(e.value))
+const fmtSats = (v: number) => `${Math.round(v * 1e8).toLocaleString('en-US')} sats`
+
+const fmtTime = (t: number | undefined) =>
+  t && t > 0 ? new Date(t * 1000).toLocaleString('sv-SE', { hour12: false }) : ''
+
+const fmtTimeShort = (t: number | undefined) => {
+  const s = fmtTime(t)
+  return s ? s.slice(0, 16) : ''
+}
+
+const stripKind = (id: string) => id.replace(/^[at]:/, '')
+
+const edgeLabel = (e: FlowEdge) => {
+  const parts: string[] = []
+  if (e.height > 0) parts.push(`[${e.height}]`)
+  const t = fmtTimeShort(e.time)
+  if (t) parts.push(`[${t}]`)
+  parts.push(fmtBTC(e.value))
+  return parts.join(' ')
+}
 
 const shortTxid = (id: string) => (id.length <= 12 ? id : `${id.slice(0, 10)}…`)
 
 function collapse(data: GraphData): { nodes: FlowNode[]; edges: FlowEdge[] } {
   const nodes = new Map<string, FlowNode>()
-  const txIn = new Map<string, { from: string; value: number; height: number }[]>()
-  const txOut = new Map<string, { to: string; value: number }[]>()
+  const txIn = new Map<string, { from: string; value: number; height: number; time: number }[]>()
+  const txOut = new Map<string, { to: string; value: number; time: number }[]>()
   const txSeen = new Set<string>()
 
   for (const n of data.nodes) {
@@ -66,7 +89,8 @@ function collapse(data: GraphData): { nodes: FlowNode[]; edges: FlowEdge[] } {
         id: n.id,
         kind: 'address',
         label: n.label,
-        tip: `${n.id.slice(2)}${n.cex_name ? ` · ${n.cex_name}` : ''}`,
+        full: n.id.slice(2),
+        value: n.value_btc,
         cex: n.cex,
         cexName: n.cex_name || '',
         highlighted: n.cex || !!n.watched,
@@ -79,12 +103,12 @@ function collapse(data: GraphData): { nodes: FlowNode[]; edges: FlowEdge[] } {
     if (e.source.startsWith('t:')) {
       txSeen.add(e.source)
       const arr = txOut.get(e.source) || []
-      arr.push({ to: e.target, value: e.value_btc })
+      arr.push({ to: e.target, value: e.value_btc, time: e.time || 0 })
       txOut.set(e.source, arr)
     } else {
       const arr = txIn.get(e.target) || []
       if (!arr.some((i) => i.from === e.source)) {
-        arr.push({ from: e.source, value: e.value_btc, height: e.height })
+        arr.push({ from: e.source, value: e.value_btc, height: e.height, time: e.time || 0 })
       }
       txIn.set(e.target, arr)
     }
@@ -100,31 +124,33 @@ function collapse(data: GraphData): { nodes: FlowNode[]; edges: FlowEdge[] } {
         id: tx,
         kind: 'tx',
         label: shortTxid(txid),
-        tip: txid,
+        full: txid,
+        value: 0,
         cex: false,
         cexName: '',
-        highlighted: txid === data.txid,
+        highlighted: data.txids.includes(txid),
       })
       for (const o of outs) {
-        edges.push({ id: `${tx}->${o.to}`, source: tx, target: o.to, value: o.value, height: 0, txid })
+        edges.push({ id: `${tx}->${o.to}`, source: tx, target: o.to, value: o.value, height: 0, time: o.time, txid })
       }
     } else if (outs.length === 0) {
       nodes.set(tx, {
         id: tx,
         kind: 'tx',
         label: shortTxid(txid),
-        tip: txid,
+        full: txid,
+        value: 0,
         cex: false,
         cexName: '',
         highlighted: false,
       })
       for (const i of ins) {
-        edges.push({ id: `${i.from}->${tx}`, source: i.from, target: tx, value: i.value, height: i.height, txid })
+        edges.push({ id: `${i.from}->${tx}`, source: i.from, target: tx, value: i.value, height: i.height, time: i.time, txid })
       }
     } else {
       for (const i of ins) {
         for (const o of outs) {
-          edges.push({ id: `${i.from}->${o.to}@${tx}`, source: i.from, target: o.to, value: o.value, height: i.height, txid })
+          edges.push({ id: `${i.from}->${o.to}@${tx}`, source: i.from, target: o.to, value: o.value, height: i.height, time: i.time, txid })
         }
       }
     }
@@ -134,7 +160,7 @@ function collapse(data: GraphData): { nodes: FlowNode[]; edges: FlowEdge[] } {
 
 function buildLayout(flow: { nodes: FlowNode[]; edges: FlowEdge[] }): Layout {
   const g = new dagre.graphlib.Graph()
-  g.setGraph({ rankdir: 'LR', nodesep: 26, ranksep: 200, marginx: 24, marginy: 24 })
+  g.setGraph({ rankdir: 'LR', nodesep: 26, ranksep: 300, marginx: 24, marginy: 24 })
   g.setDefaultEdgeLabel(() => ({}))
 
   for (const n of flow.nodes) {
@@ -205,13 +231,65 @@ function buildLayout(flow: { nodes: FlowNode[]; edges: FlowEdge[] }): Layout {
   return { nodes, edges: edgesLaid, bbox }
 }
 
+interface Detail {
+  title: string
+  rows: [string, string][]
+  link: string
+}
+
+function buildDetail(l: Layout, sel: NonNullable<Sel>): Detail | null {
+  if (sel.kind === 'edge') {
+    const e = l.edges.find((x) => x.id === sel.id)
+    if (!e) return null
+    return {
+      title: 'spend',
+      rows: [
+        ['from', stripKind(e.source)],
+        ['to', stripKind(e.target)],
+        ['amount', `${fmtBTC(e.value)} · ${fmtSats(e.value)}`],
+        ['txid', e.txid],
+        ['block', e.height > 0 ? String(e.height) : 'unknown'],
+        ['time', fmtTime(e.time) || 'unknown'],
+      ],
+      link: `https://mempool.space/tx/${e.txid}`,
+    }
+  }
+  const n = l.nodes.find((x) => x.id === sel.id)
+  if (!n) return null
+  if (n.kind === 'address') {
+    const rows: [string, string][] = [
+      ['address', n.full],
+      ['received', `${fmtBTC(n.value)} · ${fmtSats(n.value)}`],
+    ]
+    if (n.cexName) rows.push(['entity', n.cexName])
+    if (n.cex) rows.push(['cex', 'yes'])
+    return {
+      title: 'address',
+      rows,
+      link: `https://mempool.space/address/${n.full}`,
+    }
+  }
+  const e = l.edges.find((x) => x.txid === n.full)
+  return {
+    title: 'transaction',
+    rows: [
+      ['txid', n.full],
+      ['block', e && e.height > 0 ? String(e.height) : 'unknown'],
+      ['time', fmtTime(e?.time) || 'unknown'],
+    ],
+    link: `https://mempool.space/tx/${n.full}`,
+  }
+}
+
 export function GraphView({ data }: { data: GraphData | null }) {
   const wrapRef = useRef<HTMLDivElement>(null)
   const layoutRef = useRef<Layout | null>(null)
   const panRef = useRef<{ px: number; py: number; vx: number; vy: number } | null>(null)
+  const movedRef = useRef(false)
   const [layout, setLayout] = useState<Layout | null>(null)
   const [view, setView] = useState({ x: 0, y: 0, k: 1 })
   const [dragging, setDragging] = useState(false)
+  const [sel, setSel] = useState<Sel>(null)
 
   const fit = useCallback(() => {
     const el = wrapRef.current
@@ -232,11 +310,13 @@ export function GraphView({ data }: { data: GraphData | null }) {
     if (!data) {
       layoutRef.current = null
       setLayout(null)
+      setSel(null)
       return
     }
     const l = buildLayout(collapse(data))
     layoutRef.current = l
     setLayout(l)
+    setSel(null)
     requestAnimationFrame(fit)
   }, [data, fit])
 
@@ -258,6 +338,32 @@ export function GraphView({ data }: { data: GraphData | null }) {
     return () => el.removeEventListener('wheel', onWheel)
   }, [])
 
+  useEffect(() => {
+    if (!dragging) return
+    const move = (ev: PointerEvent) => {
+      const p = panRef.current
+      if (!p) return
+      const dx = ev.clientX - p.px
+      const dy = ev.clientY - p.py
+      if (Math.abs(dx) + Math.abs(dy) > 3) movedRef.current = true
+      setView((v) => ({ ...v, x: p.vx + dx, y: p.vy + dy }))
+    }
+    const up = () => {
+      panRef.current = null
+      setDragging(false)
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+    return () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+    }
+  }, [dragging])
+
+  const clickGuard = (fn: () => void) => () => {
+    if (!movedRef.current) fn()
+  }
+
   const zoomBy = (f: number) =>
     setView((v) => {
       const el = wrapRef.current
@@ -268,28 +374,27 @@ export function GraphView({ data }: { data: GraphData | null }) {
       return { k, x: cx - (cx - v.x) * s, y: cy - (cy - v.y) * s }
     })
 
+  const detail = layout && sel ? buildDetail(layout, sel) : null
+
   return (
     <div
       className={`graph-canvas${dragging ? ' dragging' : ''}`}
       ref={wrapRef}
       onPointerDown={(e) => {
+        movedRef.current = false
         panRef.current = { px: e.clientX, py: e.clientY, vx: view.x, vy: view.y }
         setDragging(true)
-        e.currentTarget.setPointerCapture(e.pointerId)
-      }}
-      onPointerMove={(e) => {
-        const p = panRef.current
-        if (!p) return
-        setView((v) => ({ ...v, x: p.vx + (e.clientX - p.px), y: p.vy + (e.clientY - p.py) }))
-      }}
-      onPointerUp={() => {
-        panRef.current = null
-        setDragging(false)
       }}
       onDoubleClick={fit}
     >
       <div className="graph-watermark">bitracer</div>
-      <svg width="100%" height="100%">
+      <svg
+        width="100%"
+        height="100%"
+        onClick={(e) => {
+          if (e.target === e.currentTarget) setSel(null)
+        }}
+      >
         <defs>
           <marker
             id="ms-arrow"
@@ -305,40 +410,59 @@ export function GraphView({ data }: { data: GraphData | null }) {
         </defs>
         {layout && (
           <g transform={`translate(${view.x},${view.y}) scale(${view.k})`}>
-            {layout.edges.map((e) => (
-              <g key={e.id}>
-                <path d={e.path} fill="none" stroke={ORANGE} strokeWidth={3} markerEnd="url(#ms-arrow)">
-                  <title>{`${e.txid}\nheight ${e.height || '?'} · ${fmtBTC(e.value)}`}</title>
-                </path>
-                <text
-                  x={e.lx}
-                  y={e.ly - 10}
-                  textAnchor="middle"
-                  className="graph-edge-label"
-                  fontSize={e.fontSize}
+            {layout.edges.map((e) => {
+              const selected = sel?.kind === 'edge' && sel.id === e.id
+              return (
+                <g
+                  key={e.id}
+                  className="edge"
+                  onClick={clickGuard(() => setSel({ kind: 'edge', id: e.id }))}
                 >
-                  {e.height > 0 ? (
-                    <>
-                      <tspan fill={ORANGE}>[{e.height}] </tspan>
-                      <tspan fill={TEXT}>{fmtBTC(e.value)}</tspan>
-                    </>
-                  ) : (
+                  <path
+                    d={e.path}
+                    fill="none"
+                    stroke={selected ? '#ffb75e' : ORANGE}
+                    strokeWidth={selected ? 4.5 : 3}
+                    markerEnd="url(#ms-arrow)"
+                  >
+                    <title>{`${e.txid}\nblock ${e.height || '?'} · ${
+                      fmtTime(e.time) || 'time unknown'
+                    } · ${fmtBTC(e.value)}`}</title>
+                  </path>
+                  <text
+                    x={e.lx}
+                    y={e.ly - 10}
+                    textAnchor="middle"
+                    className="graph-edge-label"
+                    fontSize={e.fontSize}
+                  >
+                    {e.height > 0 && <tspan fill={ORANGE}>[{e.height}] </tspan>}
+                    {fmtTimeShort(e.time) && <tspan fill={MUTED}>[{fmtTimeShort(e.time)}] </tspan>}
                     <tspan fill={TEXT}>{fmtBTC(e.value)}</tspan>
-                  )}
-                </text>
-              </g>
-            ))}
-            {layout.nodes.map((n) => (
-              <g key={n.id} transform={`translate(${n.x - n.w / 2},${n.y - n.h / 2})`}>
-                <title>{n.tip}</title>
-                <rect
-                  width={n.w}
-                  height={n.h}
-                  rx={10}
-                  fill={CARD}
-                  stroke={n.highlighted ? ORANGE : CARD_BORDER}
-                  strokeWidth={n.highlighted ? 2 : 1}
-                />
+                  </text>
+                </g>
+              )
+            })}
+            {layout.nodes.map((n) => {
+              const selected = sel?.kind === 'node' && sel.id === n.id
+              return (
+                <g
+                  key={n.id}
+                  className="node"
+                  transform={`translate(${n.x - n.w / 2},${n.y - n.h / 2})`}
+                  onClick={clickGuard(() => setSel({ kind: 'node', id: n.id }))}
+                >
+                  <title>{n.full}</title>
+                  <rect
+                    width={n.w}
+                    height={n.h}
+                    rx={10}
+                    fill={CARD}
+                    stroke={
+                      selected ? '#ffc37a' : n.highlighted ? ORANGE : CARD_BORDER
+                    }
+                    strokeWidth={selected ? 2.5 : n.highlighted ? 2 : 1}
+                  />
                 {n.kind === 'address' ? (
                   <>
                     <circle cx={24} cy={n.h / 2} r={14} fill={ORANGE} />
@@ -391,13 +515,31 @@ export function GraphView({ data }: { data: GraphData | null }) {
                     <text x={38} y={n.h / 2 + 1} dominantBaseline="central" className="graph-addr">
                       {n.label}
                     </text>
-                  </>
-                )}
-              </g>
-            ))}
+                   </>
+                 )}
+                </g>
+              )
+            })}
           </g>
         )}
       </svg>
+      {detail && (
+        <div className="graph-detail">
+          <div className="gd-head">
+            <span>{detail.title}</span>
+            <button onClick={() => setSel(null)}>✕</button>
+          </div>
+          {detail.rows.map(([k, v]) => (
+            <div key={k} className="gd-row">
+              <span>{k}</span>
+              <b>{v}</b>
+            </div>
+          ))}
+          <a href={detail.link} target="_blank" rel="noreferrer">
+            view on mempool.space ↗
+          </a>
+        </div>
+      )}
       {layout && (
         <div className="graph-zoom">
           <button onClick={() => zoomBy(1 / 1.2)}>−</button>

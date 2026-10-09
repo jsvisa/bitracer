@@ -30,6 +30,7 @@ type graphEdge struct {
 	Value  float64 `json:"value_btc"`
 	Txid   string  `json:"txid"`
 	Height int64   `json:"height"`
+	Time   int64   `json:"time,omitempty"`
 }
 
 const graphRowCap = 20000
@@ -45,6 +46,10 @@ func (s *Server) graph(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	var minSats int64
+	if m, err := strconv.ParseInt(q.Get("min_sats"), 10, 64); err == nil && m > 0 {
+		minSats = m
+	}
 	nodes := map[string]*graphNode{}
 	edges := map[string]*graphEdge{}
 	// attached tracks txids whose outputs are already merged into nodes/edges,
@@ -52,15 +57,17 @@ func (s *Server) graph(w http.ResponseWriter, r *http.Request) {
 	// at level N+1).
 	attached := map[string]bool{}
 	total := 0
+	indexed := 0
 	curTxids := roots
 	visitedTx := map[string]bool{}
 
 	for d := 0; d <= depth && len(curTxids) > 0 && total < graphRowCap; d++ {
-		spentTxids, spentVouts, ok := s.loadOutpoints(r.Context(), curTxids, nodes, edges, attached)
+		spentTxids, spentVouts, n, ok := s.loadOutpoints(r.Context(), curTxids, nodes, edges, attached, minSats)
 		if !ok {
 			writeErr(w, http.StatusInternalServerError, errGraphQuery)
 			return
 		}
+		indexed += n
 		total += len(spentTxids)
 		if total >= graphRowCap {
 			break
@@ -91,7 +98,7 @@ func (s *Server) graph(w http.ResponseWriter, r *http.Request) {
 			visitedTx[t] = true
 		}
 		if len(next) > 0 {
-			if err := s.attachOutputs(r.Context(), next, nodes, edges, attached); err != nil {
+			if err := s.attachOutputs(r.Context(), next, nodes, edges, attached, minSats); err != nil {
 				writeErr(w, http.StatusInternalServerError, err)
 				return
 			}
@@ -99,9 +106,11 @@ func (s *Server) graph(w http.ResponseWriter, r *http.Request) {
 		curTxids = next
 	}
 
-	if len(nodes) == 0 {
+	// only fall back to the live RPC view when none of the roots were indexed;
+	// an indexed-but-fully-pruned graph must stay empty.
+	if indexed == 0 {
 		for _, txid := range roots {
-			if err := s.liveTxGraph(r.Context(), txid, nodes); err != nil {
+			if err := s.liveTxGraph(r.Context(), txid, nodes, minSats); err != nil {
 				writeErr(w, http.StatusInternalServerError, err)
 				return
 			}
@@ -118,6 +127,29 @@ func (s *Server) graph(w http.ResponseWriter, r *http.Request) {
 	el := make([]graphEdge, 0, len(edges))
 	for _, e := range edges {
 		el = append(el, *e)
+	}
+	if len(el) > 0 {
+		seen := map[string]bool{}
+		txset := make([]string, 0, len(el))
+		for _, e := range el {
+			if !seen[e.Txid] {
+				seen[e.Txid] = true
+				txset = append(txset, e.Txid)
+			}
+		}
+		times, err := s.st.TxTimes(r.Context(), txset)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		for i := range el {
+			if t, ok := times[el[i].Txid]; ok {
+				el[i].Time = t.Ts
+				if el[i].Height == 0 {
+					el[i].Height = t.Height
+				}
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"nodes": nl, "edges": el, "txids": roots})
 }
@@ -159,14 +191,19 @@ func addrKey(addr string) string {
 	return addr
 }
 
-func (s *Server) loadOutpoints(ctx context.Context, txids []string, nodes map[string]*graphNode, edges map[string]*graphEdge, attached map[string]bool) ([]string, []int32, bool) {
+func (s *Server) loadOutpoints(ctx context.Context, txids []string, nodes map[string]*graphNode, edges map[string]*graphEdge, attached map[string]bool, minSats int64) ([]string, []int32, int, bool) {
 	outs, err := s.st.OutputsForTxids(ctx, txids)
 	if err != nil {
-		return nil, nil, false
+		return nil, nil, 0, false
 	}
 	spentTxids := make([]string, 0, len(outs))
 	spentVouts := make([]int32, 0, len(outs))
 	for _, o := range outs {
+		// below the case threshold: prune the output and its downstream,
+		// mirroring the case walker
+		if minSats > 0 && o.ValueSats < minSats {
+			continue
+		}
 		spentTxids = append(spentTxids, o.Txid)
 		spentVouts = append(spentVouts, o.Vout)
 		if !attached[o.Txid] {
@@ -189,16 +226,19 @@ func (s *Server) loadOutpoints(ctx context.Context, txids []string, nodes map[st
 	for _, o := range outs {
 		attached[o.Txid] = true
 	}
-	return spentTxids, spentVouts, true
+	return spentTxids, spentVouts, len(outs), true
 }
 
-func (s *Server) attachOutputs(ctx context.Context, txids []string, nodes map[string]*graphNode, edges map[string]*graphEdge, attached map[string]bool) error {
+func (s *Server) attachOutputs(ctx context.Context, txids []string, nodes map[string]*graphNode, edges map[string]*graphEdge, attached map[string]bool, minSats int64) error {
 	outs, err := s.st.OutputsForTxids(ctx, txids)
 	if err != nil {
 		return err
 	}
 	for _, o := range outs {
 		if !attached[o.Txid] {
+			if minSats > 0 && o.ValueSats < minSats {
+				continue
+			}
 			txNode := "t:" + o.Txid
 			if _, ok := nodes[txNode]; !ok {
 				nodes[txNode] = &graphNode{ID: txNode, Type: "tx", Label: shortTxid(o.Txid)}
@@ -237,7 +277,7 @@ func (s *Server) markCEX(ctx context.Context, nodes map[string]*graphNode) error
 	return nil
 }
 
-func (s *Server) liveTxGraph(ctx context.Context, txid string, nodes map[string]*graphNode) error {
+func (s *Server) liveTxGraph(ctx context.Context, txid string, nodes map[string]*graphNode, minSats int64) error {
 	tx, err := s.rpc.RawTx(ctx, txid)
 	if err != nil {
 		return nil
@@ -245,6 +285,9 @@ func (s *Server) liveTxGraph(ctx context.Context, txid string, nodes map[string]
 	tNode := "t:" + txid
 	nodes[tNode] = &graphNode{ID: tNode, Type: "tx", Label: shortTxid(txid)}
 	for _, vout := range tx.Vout {
+		if minSats > 0 && btc.Sats(vout.Value) < minSats {
+			continue
+		}
 		addr := addrKey(vout.ScriptPubKey.Address)
 		aNode := "a:" + addr
 		if n, ok := nodes[aNode]; ok {
