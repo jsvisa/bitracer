@@ -1,27 +1,129 @@
 # bitracer
 
-Stolen-funds tracking for Bitcoin: given one or more source txids, follow every
-movement of their outputs (>= a per-job threshold, e.g. 0.1 BTC) block by block
-over bitcoind's JSON-RPC, until each path terminates at a labeled entity
-(CEX, mixer, ...). Alerts go to Slack / Telegram / Lark; a local dashboard
-manages tracked txids and draws the fund-flow graph.
+Stolen-funds tracking for Bitcoin. Given one or more source txhashes ("cases"),
+follow every movement of their outputs (above a minimum threshold, e.g. 0.1 BTC)
+block by block over bitcoind's JSON-RPC until each path terminates at a labeled
+entity (CEX/exchange via the BlockSec address-label API). Alerts fan out to
+Slack / Telegram / Lark channels configured per case in the web dashboard, which
+also draws the fund-flow graph from the local Postgres index.
 
-## Components
+## Architecture
 
 ```
 bitcoind (txindex=1)
+   |  JSON-RPC (getblock 2, waitfornewblock, gettxspendingprevout, getrawtransaction)
+   v
+bitracer etl      full-chain indexer + case walker
+  - indexes every tx/output/input from --start-block into Postgres
+  - watches case source txhashes and every descendant output >= min threshold
+  - mempool poll (gettxspendingprevout) for pre-confirmation alerts,
+    with eviction rollback
+  - reorg-safe (block-hash check + reset window)
+  - stops each path at labeled entities (BlockSec labels, cached)
    |
    v
-bitracer etl      -- JSON-RPC poller: new blocks + mempool spends, walks the
-                     graph, writes everything to SQLite, resolves address
-                     labels (BlockSec), fans out alerts
+Postgres          txs, tx_outputs, tx_inputs (chain index)
+                  cases, case_txs, case_channels, watched_outputs,
+                  addresses (label cache), alerts, sync_state
    |
    v
-bitracer serve    -- REST API (jobs CRUD, graph, alerts) + static dashboard
+bitracer serve    REST API + dashboard (web/dist)
+  - cases CRUD, txhashes per case, notify channels per case
+  - /api/graph: BFS over the spend index (tx<->address bipartite graph)
 ```
 
-All state lives in one SQLite file, so both processes restart-free.
+A **case** = one investigation: one or more source txhashes, a minimum-BTC
+threshold (falls back to the daemon's `--minimum-btc`), and any number of
+notification channels (slack webhook / telegram bot token+chat / lark webhook)
+configured from the dashboard. All state is in Postgres, so both processes
+restart-free and the ETL resumes from `sync_state.last_height`.
+
+## Requirements
+
+- bitcoind with `txindex=1`, RPC enabled
+- Postgres (14+)
+- Go 1.25+, Node 20+ / pnpm (only for building the dashboard)
+
+## Build
+
+```sh
+go build -o bitracer ./cmd/bitracer
+(cd web && pnpm install && pnpm build)   # produces web/dist
+```
+
+## Run
+
+```sh
+# schema
+DATABASE_URL=postgres://... ./bitracer migrate
+
+# daemon: index from block N onwards, track movements >= 0.1 BTC (default)
+./bitracer etl \
+  --start-block 870000 \
+  --rpc-url http://127.0.0.1:8332 \
+  --rpc-user user --rpc-pass pass \
+  --minimum-btc 0.1 \
+  --db-url postgres://...
+
+# api + dashboard (serves web/dist, proxies /api)
+DATABASE_URL=postgres://... BLOCKSEC_API_URL=... BLOCKSEC_API_KEY=... ./bitracer serve
+
+# or both in one process
+./bitracer run --start-block 870000 ...
+```
+
+Environment: `DATABASE_URL`, `BTC_RPC_URL`, `BTC_RPC_USER`, `BTC_RPC_PASS`,
+`BLOCKSEC_API_URL`, `BLOCKSEC_API_KEY`, `BITRACER_LISTEN` (default `:8080`),
+`BITRACER_WEB_DIR` (default `web/dist`).
+
+### Dashboard
+
+- create a **case** (name, optional min BTC)
+- add/remove **txhashes** — the ETL seeds each source tx and starts walking
+- add **channels** (slack / telegram / lark) — alerts for that case go there
+- **graph** tab: enter any txhash to draw the fund flow (also works for txs not
+  tracked, if bitcoind has them); red nodes = labeled entities (CEX)
+- **alerts** tab: live feed (polls every 15s)
+
+### API
+
+```
+GET    /api/health
+GET    /api/cases                  POST /api/cases {name, min_btc?, depth_cap?, branch_cap?}
+GET    /api/cases/{id}             PATCH /api/cases/{id} {status: active|paused}
+DELETE /api/cases/{id}             (cascades txs/channels/watched/alerts)
+GET    /api/cases/{id}/txs         POST /api/cases/{id}/txs {txid}
+DELETE /api/cases/{id}/txs/{txid}
+GET    /api/cases/{id}/channels    POST /api/cases/{id}/channels {type, config}
+DELETE /api/channels/{id}
+GET    /api/alerts?case_id=&limit=
+GET    /api/graph?txid=&depth=
+```
+
+Channel configs: slack `{"webhook": "https://hooks.slack.com/..."}`,
+telegram `{"token": "...", "chat_id": "..."}`
+lark `{"webhook": "https://open.larksuite.com/open-apis/bot/v2/hook/..."}`.
+
+## Semantics & caveats
+
+- An output is watched only if `value >= case.min_sats` (or the daemon default);
+  dust branches are not followed.
+- A path stops when an output address is labeled CEX/exchange by the BlockSec
+  provider, or at `depth_cap` / `branch_cap` per case.
+- Mempool spends are alerted immediately with `height=0`; if the spender is
+  evicted from the mempool the watch is rolled back. Unconfirmed descendants are
+  cleaned up too.
+- Reorgs: when the stored block hash at height H mismatches the chain, all
+  index/watch data at >= H is reset and re-synced.
+- Full-chain indexing from an old `--start-block` is heavy (billions of rows for
+  whole-chain scans) — pick a start block near your case dates for reasonable
+  footprint, and give Postgres real resources.
+- `blockheight`-aware seeding: source txhashes older than `--start-block` are
+  fetched directly from bitcoind.
 
 ## Status
 
-Work in progress on branch `feat/scaffold`.
+Scaffold complete on `feat/scaffold`: backend builds + vets clean, CRUD API
+smoke-tested against Postgres 16, dashboard builds. Not yet verified against a
+live bitcoind; BlockSec response mapping is tolerant but should be confirmed
+against the real endpoint shape.

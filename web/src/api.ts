@@ -1,0 +1,98 @@
+export interface Case {
+  id: number
+  name: string
+  min_sats: number | null
+  depth_cap: number
+  branch_cap: number
+  status: string
+  created_at: string
+}
+
+export interface CaseTx {
+  case_id: number
+  txid: string
+  seeded: boolean
+}
+
+export interface Channel {
+  id: number
+  case_id: number
+  type: string
+  config: Record<string, string>
+}
+
+export interface Alert {
+  id: number
+  case_id: number
+  txid: string
+  address: string
+  value_sats: number
+  depth: number
+  kind: string
+  message: string
+  created_at: string
+}
+
+export interface GraphNode {
+  id: string
+  type: string
+  label: string
+  value_btc: number
+  cex: boolean
+  cex_name?: string
+}
+
+export interface GraphEdge {
+  id: string
+  source: string
+  target: string
+  value_btc: number
+  txid: string
+  height: number
+}
+
+export interface GraphData {
+  nodes: GraphNode[]
+  edges: GraphEdge[]
+  txid: string
+}
+
+async function req<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(path, {
+    headers: { 'Content-Type': 'application/json' },
+    ...init,
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.error || `${res.status} ${res.statusText}`)
+  }
+  return res.json() as Promise<T>
+}
+
+export const api = {
+  listCases: () => req<Case[]>('/api/cases'),
+  createCase: (name: string, minBTC?: number) =>
+    req<Case>('/api/cases', { method: 'POST', body: JSON.stringify({ name, min_btc: minBTC }) }),
+  deleteCase: (id: number) => req<void>(`/api/cases/${id}`, { method: 'DELETE' }),
+  setCaseStatus: (id: number, status: string) =>
+    req<void>(`/api/cases/${id}`, { method: 'PATCH', body: JSON.stringify({ status }) }),
+
+  listCaseTxs: (id: number) => req<CaseTx[]>(`/api/cases/${id}/txs`),
+  addCaseTx: (id: number, txid: string) =>
+    req<void>(`/api/cases/${id}/txs`, { method: 'POST', body: JSON.stringify({ txid }) }),
+  deleteCaseTx: (id: number, txid: string) =>
+    req<void>(`/api/cases/${id}/txs/${txid}`, { method: 'DELETE' }),
+
+  listChannels: (id: number) => req<Channel[]>(`/api/cases/${id}/channels`),
+  addChannel: (id: number, type: string, config: Record<string, string>) =>
+    req<Channel>(`/api/cases/${id}/channels`, { method: 'POST', body: JSON.stringify({ type, config }) }),
+  deleteChannel: (channelID: number) => req<void>(`/api/channels/${channelID}`, { method: 'DELETE' }),
+
+  listAlerts: (caseID?: number) =>
+    req<Alert[]>(`/api/alerts?limit=200${caseID ? `&case_id=${caseID}` : ''}`),
+
+  graph: (txid: string, depth = 6) =>
+    req<GraphData>(`/api/graph?txid=${txid}&depth=${depth}`),
+}
+
+export const satsToBTC = (s: number) => s / 1e8

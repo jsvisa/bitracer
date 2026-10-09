@@ -10,26 +10,26 @@ import (
 )
 
 type Case struct {
-	ID        int64
-	Name      string
-	MinSats   *int64
-	DepthCap  int32
-	BranchCap int32
-	Status    string
-	CreatedAt time.Time
+	ID        int64     `json:"id"`
+	Name      string    `json:"name"`
+	MinSats   *int64    `json:"min_sats"`
+	DepthCap  int32     `json:"depth_cap"`
+	BranchCap int32     `json:"branch_cap"`
+	Status    string    `json:"status"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type CaseTx struct {
-	CaseID int64
-	Txid   string
-	Seeded bool
+	CaseID int64  `json:"case_id"`
+	Txid   string `json:"txid"`
+	Seeded bool   `json:"seeded"`
 }
 
 type Channel struct {
-	ID     int64
-	CaseID int64
-	Type   string
-	Config json.RawMessage
+	ID     int64           `json:"id"`
+	CaseID int64           `json:"case_id"`
+	Type   string          `json:"type"`
+	Config json.RawMessage `json:"config"`
 }
 
 func (s *Store) CreateCase(ctx context.Context, name string, minSats *int64, depthCap, branchCap int32) (Case, error) {

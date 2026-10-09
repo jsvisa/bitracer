@@ -237,15 +237,15 @@ func (s *Store) UpsertAddress(ctx context.Context, a AddressInfo) error {
 }
 
 type Alert struct {
-	ID        int64
-	CaseID    int64
-	Txid      string
-	Address   string
-	ValueSats int64
-	Depth     int32
-	Kind      string
-	Message   string
-	CreatedAt string
+	ID        int64  `json:"id"`
+	CaseID    int64  `json:"case_id"`
+	Txid      string `json:"txid"`
+	Address   string `json:"address"`
+	ValueSats int64  `json:"value_sats"`
+	Depth     int32  `json:"depth"`
+	Kind      string `json:"kind"`
+	Message   string `json:"message"`
+	CreatedAt string `json:"created_at"`
 }
 
 func (s *Store) AddAlert(ctx context.Context, a Alert) error {
