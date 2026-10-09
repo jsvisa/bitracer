@@ -225,9 +225,13 @@ func (s *Slack) Send(ctx context.Context, msg Message) error {
 	if IsTerminalKind(msg.Kind) {
 		color = "#a3be8c"
 	}
-	// attachment text is the notification fallback only — Slack does not
-	// render it in-app when blocks are present, so no duplicated body.
-	fallback := strings.ReplaceAll(msg.Plain(), msg.Txid, shortTx(msg.Txid))
+	// One short line as the notification text — Slack renders payload-level
+	// text in-app above the card, and rejects attachments[].text outright
+	// (invalid_attachments) when blocks are present, so keep it payload-level.
+	fallback := fmt.Sprintf("[bitracer] case#%d · %s", msg.CaseID, kindLabel(msg))
+	if msg.Headline != "" {
+		fallback += " — " + strings.ReplaceAll(msg.Headline, msg.Txid, shortTx(msg.Txid))
+	}
 	blocks := []any{
 		map[string]any{
 			"type": "header",
@@ -245,10 +249,10 @@ func (s *Slack) Send(ctx context.Context, msg Message) error {
 		})
 	}
 	payload := map[string]any{
+		"text": fallback,
 		"attachments": []any{
 			map[string]any{
 				"color":  color,
-				"text":   fallback,
 				"blocks": blocks,
 			},
 		},
