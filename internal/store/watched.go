@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"strconv"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -114,10 +115,12 @@ func (s *Store) AddWatched(ctx context.Context, rows []WatchedRow) ([]WatchedRow
 	}
 	res, err := s.pool.Query(ctx,
 		`INSERT INTO watched_outputs (case_id, txid, vout, address, value_sats, depth, status, height)
-		 SELECT * FROM unnest($1::bigint[], $2::text[], $3::int[], $4::text[], $5::bigint[], $6::int[], $7::text[], $8::bigint[])
+		 SELECT case_id, txid, vout, address, value_sats, depth, 'watching', height
+		 FROM unnest($1::bigint[], $2::text[], $3::int[], $4::text[], $5::bigint[], $6::int[], $7::bigint[])
+		 AS t(case_id, txid, vout, address, value_sats, depth, height)
 		 ON CONFLICT DO NOTHING
 		 RETURNING case_id, txid, vout, address, value_sats, depth`,
-		caseIDs, txids, vouts, addrs, vals, depths, "watching", heights)
+		caseIDs, txids, vouts, addrs, vals, depths, heights)
 	if err != nil {
 		return nil, err
 	}
@@ -136,6 +139,12 @@ func (s *Store) AddWatched(ctx context.Context, rows []WatchedRow) ([]WatchedRow
 
 func (s *Store) WatchingOutputs(ctx context.Context) ([]WatchedRow, error) {
 	return s.queryWatched(ctx, `SELECT case_id, txid, vout, address, value_sats, depth, status, spent_by_txid, spent_height, height FROM watched_outputs WHERE status = 'watching'`)
+}
+
+func (s *Store) WatchingByCase(ctx context.Context, caseID int64) ([]WatchedRow, error) {
+	return s.queryWatched(ctx,
+		`SELECT case_id, txid, vout, address, value_sats, depth, status, spent_by_txid, spent_height, height
+		 FROM watched_outputs WHERE case_id = `+strconv.FormatInt(caseID, 10)+` AND status = 'watching'`)
 }
 
 func (s *Store) PendingMempoolSpends(ctx context.Context) ([]WatchedRow, error) {
@@ -159,11 +168,75 @@ func (s *Store) queryWatched(ctx context.Context, q string) ([]WatchedRow, error
 	return out, rows.Err()
 }
 
-func (s *Store) SetWatchedTerminal(ctx context.Context, caseID int64, txid string, vout int32) error {
-	_, err := s.pool.Exec(ctx,
+func (s *Store) SetWatchedTerminal(ctx context.Context, caseID int64, txid string, vout int32) (bool, error) {
+	tag, err := s.pool.Exec(ctx,
 		`UPDATE watched_outputs SET status = 'terminal' WHERE case_id = $1 AND txid = $2 AND vout = $3 AND status = 'watching'`,
 		caseID, txid, vout)
-	return err
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+func (s *Store) WatchingByAddress(ctx context.Context, addr string) ([]WatchedRow, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT case_id, txid, vout, address, value_sats, depth, status, spent_by_txid, spent_height, height
+		 FROM watched_outputs WHERE address = $1 AND status = 'watching'`, addr)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []WatchedRow
+	for rows.Next() {
+		var r WatchedRow
+		if err := rows.Scan(&r.CaseID, &r.Txid, &r.Vout, &r.Address, &r.ValueSats, &r.Depth, &r.Status, &r.SpentByTxid, &r.SpentHeight, &r.Height); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) LabelTargets(ctx context.Context, limit int) ([]string, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT DISTINCT w.address FROM watched_outputs w
+		 WHERE w.status = 'watching' AND w.address <> ''
+		 AND NOT EXISTS (SELECT 1 FROM addresses a WHERE a.address = w.address)
+		 LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var a string
+		if err := rows.Scan(&a); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) CaseLabelTargets(ctx context.Context, caseID int64, limit int) ([]string, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT DISTINCT w.address FROM watched_outputs w
+		 WHERE w.case_id = $1 AND w.status = 'watching' AND w.address <> ''
+		 AND NOT EXISTS (SELECT 1 FROM addresses a WHERE a.address = w.address)
+		 LIMIT $2`, caseID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var a string
+		if err := rows.Scan(&a); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) CountWatched(ctx context.Context, caseID int64) (int64, error) {

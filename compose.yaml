@@ -23,8 +23,9 @@ services:
     environment:
       DATABASE_URL: postgres://bitracer:bitracer@postgres:5432/bitracer?sslmode=disable
       BTC_RPC_URL: ${BTC_RPC_URL}
-      BLOCKSEC_API_URL: ${BLOCKSEC_API_URL:-}
-      BLOCKSEC_API_KEY: ${BLOCKSEC_API_KEY:-}
+      BLOCKSEC_LABEL_URL: ${BLOCKSEC_LABEL_URL:-}
+      BLOCKSEC_LABEL_APIKEY: ${BLOCKSEC_LABEL_APIKEY:-}
+      BLOCKSEC_LABEL_CHAIN_ID: ${BLOCKSEC_LABEL_CHAIN_ID:--1}
     command:
       - run
       - --start-block

@@ -1,109 +1,115 @@
 package labels
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 )
 
+const (
+	DefaultAPIURL  = "https://aml.blocksec.com/address-label/api/v3/labels"
+	BitcoinChainID = -1
+)
+
 type Blocksec struct {
-	url string
-	key string
-	hc  *http.Client
+	url     string
+	apiKey  string
+	chainID int
+	hc      *http.Client
 }
 
-func NewBlocksec(apiURL, apiKey string) *Blocksec {
-	return &Blocksec{url: strings.TrimRight(apiURL, "/"), key: apiKey, hc: &http.Client{Timeout: 15 * time.Second}}
+func NewBlocksec(apiURL, apiKey string, chainID int) *Blocksec {
+	if apiURL == "" {
+		apiURL = DefaultAPIURL
+	}
+	return &Blocksec{url: strings.TrimRight(apiURL, "/"), apiKey: apiKey, chainID: chainID, hc: &http.Client{Timeout: 15 * time.Second}}
+}
+
+func (b *Blocksec) Name() string { return "blocksec" }
+
+type blocksecCategory struct {
+	Name string `json:"name"`
+	Code int    `json:"code"`
+}
+
+type blocksecEntityInfo struct {
+	Entity     string             `json:"entity"`
+	Categories []blocksecCategory `json:"categories"`
+}
+
+type blocksecData struct {
+	ChainID        int                 `json:"chain_id"`
+	Address        string              `json:"address"`
+	MainEntity     string              `json:"main_entity"`
+	MainEntityInfo *blocksecEntityInfo `json:"main_entity_info"`
+	NameTag        string              `json:"name_tag"`
+}
+
+type blocksecResponse struct {
+	Code    int           `json:"code"`
+	Message string        `json:"message"`
+	Data    *blocksecData `json:"data"`
 }
 
 func (b *Blocksec) Lookup(ctx context.Context, address string) (*Label, error) {
-	if b.url == "" {
+	if b.apiKey == "" {
 		return nil, nil
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, b.url+"?chain=bitcoin&address="+url.QueryEscape(address), nil)
+	body, err := json.Marshal(map[string]any{"chain_id": b.chainID, "address": address})
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("X-API-Key", b.key)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("API-KEY", b.apiKey)
+	req.Header.Set("Content-Type", "application/json")
 	resp, err := b.hc.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, nil
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("blocksec http %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("blocksec http %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
-	return parseBlocksec(body, address), nil
-}
-
-type blocksecLabel struct {
-	Name     string `json:"name"`
-	Category string `json:"category"`
-}
-
-type blocksecResponse struct {
-	Name    string          `json:"name"`
-	Label   string          `json:"label"`
-	Entity  string          `json:"entity"`
-	IsCEX   bool            `json:"is_cex"`
-	Labels  []blocksecLabel `json:"labels"`
-	RawJSON json.RawMessage `json:"-"`
-}
-
-func parseBlocksec(body []byte, address string) *Label {
 	var r blocksecResponse
-	if err := json.Unmarshal(body, &r); err != nil {
-		return nil
+	if err := json.Unmarshal(raw, &r); err != nil {
+		return nil, err
 	}
-	name := firstNonEmpty(r.Name, r.Label, r.Entity)
-	isCEX := r.IsCEX
-	for _, l := range r.Labels {
-		if name == "" {
-			name = l.Name
-		}
-		if isCEXCategory(l.Category, l.Name) {
-			isCEX = true
-		}
-		if name != "" && isCEX {
-			break
-		}
+	if r.Code != 200000 {
+		return nil, fmt.Errorf("blocksec %d: %s", r.Code, r.Message)
 	}
-	if isCEXCategory(name, name) {
-		isCEX = true
+	if r.Data == nil {
+		return nil, nil
+	}
+	name := r.Data.MainEntity
+	if name == "" {
+		name = r.Data.NameTag
+	}
+	if r.Data.MainEntityInfo != nil && name == "" {
+		name = r.Data.MainEntityInfo.Entity
+	}
+	isCEX := false
+	if r.Data.MainEntityInfo != nil {
+		for _, c := range r.Data.MainEntityInfo.Categories {
+			if strings.EqualFold(c.Name, "EXCHANGE") {
+				isCEX = true
+				break
+			}
+		}
 	}
 	if name == "" && !isCEX {
-		return nil
+		return nil, nil
 	}
-	return &Label{Name: name, Source: "blocksec", IsCEX: isCEX}
-}
-
-func isCEXCategory(parts ...string) bool {
-	for _, p := range parts {
-		lp := strings.ToLower(p)
-		if strings.Contains(lp, "exchange") || strings.Contains(lp, "cex") {
-			return true
-		}
-	}
-	return false
-}
-
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
+	return &Label{Name: name, Source: b.Name(), IsCEX: isCEX}, nil
 }

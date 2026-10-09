@@ -46,7 +46,9 @@ func (c *Client) Call(ctx context.Context, method string, params ...any) (json.R
 	if err != nil {
 		return nil, err
 	}
-	req.SetBasicAuth(c.user, c.pass)
+	if c.user != "" || c.pass != "" {
+		req.SetBasicAuth(c.user, c.pass)
+	}
 	req.Header.Set("Content-Type", "application/json")
 	httpResp, err := c.hc.Do(req)
 	if err != nil {

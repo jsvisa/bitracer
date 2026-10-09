@@ -8,16 +8,18 @@ import (
 	"strings"
 
 	"github.com/jsvisa/bitracer/internal/btc"
+	"github.com/jsvisa/bitracer/internal/labeler"
 	"github.com/jsvisa/bitracer/internal/store"
 )
 
 type Server struct {
 	st  *store.Store
 	rpc *btc.Client
+	lbl *labeler.Service
 }
 
-func New(st *store.Store, rpc *btc.Client) *Server {
-	return &Server{st: st, rpc: rpc}
+func New(st *store.Store, rpc *btc.Client, lbl *labeler.Service) *Server {
+	return &Server{st: st, rpc: rpc, lbl: lbl}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -36,6 +38,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/channels/{id}", s.deleteChannel)
 	mux.HandleFunc("GET /api/alerts", s.listAlerts)
 	mux.HandleFunc("GET /api/graph", s.graph)
+	mux.HandleFunc("GET /api/label", s.lookupLabel)
+	mux.HandleFunc("POST /api/cases/{id}/resolve-labels", s.resolveCaseLabels)
 	return mux
 }
 

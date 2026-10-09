@@ -13,13 +13,13 @@ also draws the fund-flow graph from the local Postgres index.
 bitcoind (txindex=1)
    |  JSON-RPC (getblock 2, waitfornewblock, gettxspendingprevout, getrawtransaction)
    v
-bitracer etl      full-chain indexer + case walker
+bitracer etl      full-chain indexer + case walker (no external calls)
   - indexes every tx/output/input from --start-block into Postgres
   - watches case source txhashes and every descendant output >= min threshold
   - mempool poll (gettxspendingprevout) for pre-confirmation alerts,
-    with eviction rollback
+    with eviction rollback (auto-degraded when the RPC forbids it)
   - reorg-safe (block-hash check + reset window)
-  - stops each path at labeled entities (BlockSec labels, cached)
+  - stop-at-CEX uses only the local label cache
    |
    v
 Postgres          txs, tx_outputs, tx_inputs (chain index)
@@ -27,10 +27,19 @@ Postgres          txs, tx_outputs, tx_inputs (chain index)
                   addresses (label cache), alerts, sync_state
    |
    v
-bitracer serve    REST API + dashboard (web/dist)
+bitracer serve    REST API + dashboard + labeler worker (investigate phase)
   - cases CRUD, txhashes per case, notify channels per case
+  - labeler: resolves addresses via pluggable vendors (BlockSec, ...),
+    caches results, flips watched outputs to terminal on CEX hits
   - /api/graph: BFS over the spend index (tx<->address bipartite graph)
 ```
+
+Label vendors are pluggable (`labels.Provider` interface, fan-out `Registry`).
+BlockSec is wired (`BLOCKSEC_LABEL_APIKEY`, `BLOCKSEC_LABEL_CHAIN_ID=-1` for
+bitcoin); add a vendor by implementing `Name()/Lookup()` and registering it.
+Vendor lookups happen only in the investigate phase (serve-side labeler loop +
+`GET /api/label?address=` + `POST /api/cases/{id}/resolve-labels`), never in
+the ETL.
 
 A **case** = one investigation: one or more source txhashes, a minimum-BTC
 threshold (falls back to the daemon's `--minimum-btc`), and any number of
@@ -73,7 +82,8 @@ DATABASE_URL=postgres://... BLOCKSEC_API_URL=... BLOCKSEC_API_KEY=... ./bitracer
 ```
 
 Environment: `DATABASE_URL`, `BTC_RPC_URL`, `BTC_RPC_USER`, `BTC_RPC_PASS`,
-`BLOCKSEC_API_URL`, `BLOCKSEC_API_KEY`, `BITRACER_LISTEN` (default `:8080`),
+`BLOCKSEC_LABEL_APIKEY`, `BLOCKSEC_LABEL_URL`, `BLOCKSEC_LABEL_CHAIN_ID`
+(`-1` = bitcoin), `BITRACER_LABEL_INTERVAL`, `BITRACER_LISTEN` (default `:8080`),
 `BITRACER_WEB_DIR` (default `web/dist`).
 
 ### Dashboard

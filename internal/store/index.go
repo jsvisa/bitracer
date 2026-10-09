@@ -154,11 +154,12 @@ type SpendEdge struct {
 	Address   string
 	ValueSats int64
 	Spender   string
+	Height    int64
 }
 
 func (s *Store) SpendersOf(ctx context.Context, spentTxids []string, spentVouts []int32, limit int) ([]SpendEdge, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT u.txid, u.vout, o.address, o.value_sats, i.txid
+		`SELECT u.txid, u.vout, o.address, o.value_sats, i.txid, i.height
 		 FROM unnest($1::text[], $2::int[]) AS u(txid, vout)
 		 JOIN tx_inputs i ON i.spent_txid = u.txid AND i.spent_vout = u.vout
 		 JOIN tx_outputs o ON o.txid = u.txid AND o.vout = u.vout
@@ -171,7 +172,7 @@ func (s *Store) SpendersOf(ctx context.Context, spentTxids []string, spentVouts 
 	var out []SpendEdge
 	for rows.Next() {
 		var e SpendEdge
-		if err := rows.Scan(&e.SpentTxid, &e.SpentVout, &e.Address, &e.ValueSats, &e.Spender); err != nil {
+		if err := rows.Scan(&e.SpentTxid, &e.SpentVout, &e.Address, &e.ValueSats, &e.Spender, &e.Height); err != nil {
 			return nil, err
 		}
 		out = append(out, e)

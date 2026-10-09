@@ -71,7 +71,7 @@ func (s *Server) graph(w http.ResponseWriter, r *http.Request) {
 			aNode := "a:" + addrKey(e.Address)
 			tNode := "t:" + e.Spender
 			eid := aNode + "->" + tNode
-			edges[eid] = &graphEdge{ID: eid, Source: aNode, Target: tNode, Value: btc.SatsToBTC(e.ValueSats), Txid: e.Spender}
+			edges[eid] = &graphEdge{ID: eid, Source: aNode, Target: tNode, Value: btc.SatsToBTC(e.ValueSats), Txid: e.Spender, Height: e.Height}
 			if !spenderSet[e.Spender] && !visitedTx[e.Spender] {
 				spenderSet[e.Spender] = true
 				next = append(next, e.Spender)

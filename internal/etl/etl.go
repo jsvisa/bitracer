@@ -7,24 +7,22 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/jsvisa/bitracer/internal/alerts"
 	"github.com/jsvisa/bitracer/internal/btc"
 	"github.com/jsvisa/bitracer/internal/config"
-	"github.com/jsvisa/bitracer/internal/labels"
-	"github.com/jsvisa/bitracer/internal/notify"
 	"github.com/jsvisa/bitracer/internal/store"
 )
 
 type ETL struct {
 	st         *store.Store
 	rpc        *btc.Client
-	lp         labels.Provider
 	cfg        config.Config
 	startBlock int64
 	minSats    int64
 }
 
-func New(st *store.Store, rpc *btc.Client, lp labels.Provider, cfg config.Config, startBlock int64, minSats int64) *ETL {
-	return &ETL{st: st, rpc: rpc, lp: lp, cfg: cfg, startBlock: startBlock, minSats: minSats}
+func New(st *store.Store, rpc *btc.Client, cfg config.Config, startBlock int64, minSats int64) *ETL {
+	return &ETL{st: st, rpc: rpc, cfg: cfg, startBlock: startBlock, minSats: minSats}
 }
 
 func (e *ETL) Run(ctx context.Context) error {
@@ -33,14 +31,24 @@ func (e *ETL) Run(ctx context.Context) error {
 	}
 	blockDone := make(chan struct{}, 1)
 	go func() {
+		fails := 0
 		for {
 			if err := e.rpc.WaitForNewBlock(ctx, int(e.cfg.WaitTimeout/time.Second)); err != nil {
 				if ctx.Err() != nil {
 					return
 				}
-				slog.Warn("waitfornewblock failed", "err", err)
-				time.Sleep(5 * time.Second)
+				fails++
+				backoff := 5 * time.Second
+				if fails > 3 {
+					backoff = e.cfg.MempoolEvery
+				}
+				if fails == 1 || fails%12 == 0 {
+					slog.Warn("waitfornewblock unavailable (tip-following falls back to resync ticker)", "err", err, "backoff", backoff)
+				}
+				time.Sleep(backoff)
+				continue
 			}
+			fails = 0
 			select {
 			case blockDone <- struct{}{}:
 			default:
@@ -309,35 +317,16 @@ func (e *ETL) PollMempool(ctx context.Context) error {
 	return nil
 }
 
-func (e *ETL) channelsFor(ctx context.Context, caseID int64) []notify.Notifier {
-	chs, err := e.st.ListChannels(ctx, caseID)
-	if err != nil {
-		slog.Error("load channels failed", "case", caseID, "err", err)
-		return nil
-	}
-	var ns []notify.Notifier
-	for _, ch := range chs {
-		n, err := notify.Build(ch.Type, ch.Config)
-		if err != nil {
-			slog.Error("bad channel config", "case", caseID, "channel", ch.ID, "err", err)
-			continue
-		}
-		ns = append(ns, n)
-	}
-	return ns
-}
-
 func (e *ETL) afterSpend(ctx context.Context, m store.WatchedMatch, spenderTxid string, outs []store.IndexedOut, height int64, kind string) error {
 	if err := e.addWatchedFromTx(ctx, m.CaseID, m.MinSats, m.DepthCap, m.BranchCap, spenderTxid, outs, m.Depth+1, height); err != nil {
 		return err
 	}
 	msg := fmt.Sprintf("[bitracer] case#%d: %.8f BTC moved %s:%d -> spent by %s (depth %d, %s)",
 		m.CaseID, btc.SatsToBTC(m.ValueSats), short(m.Txid), m.Vout, short(spenderTxid), m.Depth+1, heightLabel(height))
-	if err := e.st.AddAlert(ctx, store.Alert{CaseID: m.CaseID, Txid: spenderTxid, Address: m.Address, ValueSats: m.ValueSats, Depth: m.Depth + 1, Kind: kind, Message: msg}); err != nil {
-		return err
-	}
-	notify.SendAll(ctx, e.channelsFor(ctx, m.CaseID), msg)
-	return nil
+	return alerts.Emit(ctx, e.st, store.Alert{
+		CaseID: m.CaseID, Txid: spenderTxid, Address: m.Address,
+		ValueSats: m.ValueSats, Depth: m.Depth + 1, Kind: kind, Message: msg,
+	}, msg)
 }
 
 func (e *ETL) addWatchedFromTx(ctx context.Context, caseID int64, minSats int64, depthCap, branchCap int32, txid string, outs []store.IndexedOut, depth int32, height int64) error {
@@ -377,46 +366,33 @@ func (e *ETL) addWatchedFromTx(ctx context.Context, caseID int64, minSats int64,
 }
 
 func (e *ETL) checkTerminal(ctx context.Context, caseID int64, txid string, vout int32, addr string, sats int64, depth int32) error {
+	if addr == "" {
+		return nil
+	}
 	info, err := e.st.GetAddress(ctx, addr)
 	if err != nil {
 		return err
 	}
-	if info == nil {
-		lbl, err := e.lp.Lookup(ctx, addr)
-		if err != nil {
-			slog.Warn("label lookup failed", "address", addr, "err", err)
-		}
-		isCEX := false
-		name := ""
-		if lbl != nil {
-			isCEX = lbl.IsCEX
-			name = lbl.Name
-		}
-		src := ""
-		if lbl != nil {
-			src = lbl.Source
-		}
-		if err := e.st.UpsertAddress(ctx, store.AddressInfo{Address: addr, Label: name, Source: src, IsCEX: isCEX}); err != nil {
-			return err
-		}
-		if !isCEX {
-			return nil
-		}
-		if err := e.st.SetWatchedTerminal(ctx, caseID, txid, vout); err != nil {
-			return err
-		}
-		msg := fmt.Sprintf("[bitracer] case#%d: %.8f BTC reached %s (%s) at %s:%d (depth %d) — STOP",
-			caseID, btc.SatsToBTC(sats), name, addr, short(txid), vout, depth)
-		if err := e.st.AddAlert(ctx, store.Alert{CaseID: caseID, Txid: txid, Address: addr, ValueSats: sats, Depth: depth, Kind: "cex", Message: msg}); err != nil {
-			return err
-		}
-		notify.SendAll(ctx, e.channelsFor(ctx, caseID), msg)
+	if info == nil || !info.IsCEX {
 		return nil
 	}
-	if info.IsCEX {
-		return e.st.SetWatchedTerminal(ctx, caseID, txid, vout)
+	flipped, err := e.st.SetWatchedTerminal(ctx, caseID, txid, vout)
+	if err != nil {
+		return err
 	}
-	return nil
+	if !flipped {
+		return nil
+	}
+	name := info.Label
+	if name == "" {
+		name = "labeled entity"
+	}
+	msg := fmt.Sprintf("[bitracer] case#%d: %.8f BTC reached %s (%s) at %s:%d (depth %d) — STOP",
+		caseID, btc.SatsToBTC(sats), name, addr, short(txid), vout, depth)
+	return alerts.Emit(ctx, e.st, store.Alert{
+		CaseID: caseID, Txid: txid, Address: addr,
+		ValueSats: sats, Depth: depth, Kind: "cex", Message: msg,
+	}, msg)
 }
 
 func (e *ETL) SeedPendingCases(ctx context.Context) error {
@@ -457,11 +433,86 @@ func (e *ETL) SeedPendingCases(ctx context.Context) error {
 			return err
 		}
 		msg := fmt.Sprintf("[bitracer] case#%d: now tracking %s", seed.CaseID, seed.Txid)
-		if err := e.st.AddAlert(ctx, store.Alert{CaseID: seed.CaseID, Txid: seed.Txid, Kind: "seed", Message: msg}); err != nil {
+		if err := alerts.Emit(ctx, e.st, store.Alert{CaseID: seed.CaseID, Txid: seed.Txid, Kind: "seed", Message: msg}, msg); err != nil {
 			return err
 		}
-		notify.SendAll(ctx, e.channelsFor(ctx, seed.CaseID), msg)
 		slog.Info("seeded case tx", "case", seed.CaseID, "txid", seed.Txid, "outputs", len(outs))
+		if err := e.catchUpCase(ctx, seed.CaseID, seed.MinSats, seed.DepthCap, seed.BranchCap); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (e *ETL) catchUpCase(ctx context.Context, caseID int64, minSats int64, depthCap, branchCap int32) error {
+	for hop := 0; hop < int(depthCap); hop++ {
+		rows, err := e.st.WatchingByCase(ctx, caseID)
+		if err != nil {
+			return err
+		}
+		if len(rows) == 0 {
+			return nil
+		}
+		depthOf := map[string]int32{}
+		var txids []string
+		var vouts []int32
+		seen := map[string]bool{}
+		for _, r := range rows {
+			key := fmt.Sprintf("%s:%d", r.Txid, r.Vout)
+			depthOf[key] = r.Depth
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			txids = append(txids, r.Txid)
+			vouts = append(vouts, r.Vout)
+		}
+		edges, err := e.st.SpendersOf(ctx, txids, vouts, 5000)
+		if err != nil {
+			return err
+		}
+		if len(edges) == 0 {
+			return nil
+		}
+		spenderSet := map[string]bool{}
+		for _, edge := range edges {
+			spenderSet[edge.Spender] = true
+		}
+		spenderList := make([]string, 0, len(spenderSet))
+		for txid := range spenderSet {
+			spenderList = append(spenderList, txid)
+		}
+		spenderOuts, err := e.st.OutputsForTxids(ctx, spenderList)
+		if err != nil {
+			return err
+		}
+		outsByTx := map[string][]store.IndexedOut{}
+		for _, o := range spenderOuts {
+			outsByTx[o.Txid] = append(outsByTx[o.Txid], o)
+		}
+		progress := false
+		for _, edge := range edges {
+			m := store.WatchedMatch{
+				CaseID: caseID, Txid: edge.SpentTxid, Vout: edge.SpentVout,
+				Address: edge.Address, ValueSats: edge.ValueSats,
+				Depth:   depthOf[fmt.Sprintf("%s:%d", edge.SpentTxid, edge.SpentVout)],
+				MinSats: minSats, DepthCap: depthCap, BranchCap: branchCap,
+			}
+			marked, err := e.st.MarkWatchedSpent(ctx, caseID, edge.SpentTxid, edge.SpentVout, edge.Spender, edge.Height)
+			if err != nil {
+				return err
+			}
+			if !marked {
+				continue
+			}
+			progress = true
+			if err := e.afterSpend(ctx, m, edge.Spender, outsByTx[edge.Spender], edge.Height, "spend"); err != nil {
+				return err
+			}
+		}
+		if !progress {
+			return nil
+		}
 	}
 	return nil
 }

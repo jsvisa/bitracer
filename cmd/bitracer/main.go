@@ -16,6 +16,7 @@ import (
 	"github.com/jsvisa/bitracer/internal/btc"
 	"github.com/jsvisa/bitracer/internal/config"
 	"github.com/jsvisa/bitracer/internal/etl"
+	"github.com/jsvisa/bitracer/internal/labeler"
 	"github.com/jsvisa/bitracer/internal/labels"
 	"github.com/jsvisa/bitracer/internal/store"
 )
@@ -114,14 +115,8 @@ func startETL(ctx context.Context, cfg config.Config, args []string) error {
 	}
 	defer st.Close()
 	rpc := btc.New(cfg.RPCURL, cfg.RPCUser, cfg.RPCPass)
-	var lp labels.Provider
-	if cfg.BlocksecURL != "" {
-		lp = labels.NewBlocksec(cfg.BlocksecURL, cfg.BlocksecKey)
-	} else {
-		slog.Warn("no label provider configured (BLOCKSEC_API_URL empty), CEX detection disabled")
-	}
 	slog.Info("etl starting", "rpc", cfg.RPCURL, "start_block", startBlock, "minimum_btc", float64(minSats)/1e8)
-	return etl.New(st, rpc, lp, cfg, startBlock, minSats).Run(ctx)
+	return etl.New(st, rpc, cfg, startBlock, minSats).Run(ctx)
 }
 
 func runETL(ctx context.Context, cfg config.Config, args []string) {
@@ -149,9 +144,24 @@ func runServe(ctx context.Context, cfg config.Config) {
 	}
 	defer st.Close()
 	rpc := btc.New(cfg.RPCURL, cfg.RPCUser, cfg.RPCPass)
+
+	var reg *labels.Registry
+	if cfg.BlocksecLabelAPIKEY != "" {
+		reg = labels.NewRegistry(labels.NewBlocksec(cfg.BlocksecLabelURL, cfg.BlocksecLabelAPIKEY, cfg.BlocksecLabelChainID))
+		slog.Info("label providers", "vendors", []string{"blocksec"}, "chain_id", cfg.BlocksecLabelChainID)
+	} else {
+		slog.Warn("no label vendor configured (BLOCKSEC_LABEL_APIKEY empty), CEX detection disabled")
+	}
+	lbl := labeler.New(st, reg, cfg.LabelInterval)
+	go func() {
+		if err := lbl.Run(ctx); err != nil && ctx.Err() == nil {
+			slog.Error("labeler exited", "err", err)
+		}
+	}()
+
 	srv := &http.Server{
 		Addr:    cfg.Listen,
-		Handler: withStatic(cfg.WebDir, api.New(st, rpc).Handler()),
+		Handler: withStatic(cfg.WebDir, api.New(st, rpc, lbl).Handler()),
 	}
 	go func() {
 		<-ctx.Done()
