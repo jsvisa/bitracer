@@ -54,8 +54,6 @@ type Sel = { kind: 'node' | 'edge'; id: string } | null
 const fmtBTC = (v: number) =>
   `${v.toFixed(8).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '')} BTC`
 
-const fmtSats = (v: number) => `${Math.round(v * 1e8).toLocaleString('en-US')} sats`
-
 const fmtTime = (t: number | undefined) =>
   t && t > 0 ? new Date(t * 1000).toLocaleString('sv-SE', { hour12: false }) : ''
 
@@ -244,12 +242,12 @@ function buildDetail(l: Layout, sel: NonNullable<Sel>): Detail | null {
     const e = l.edges.find((x) => x.id === sel.id)
     if (!e) return null
     return {
-      title: 'spend',
+      title: 'transaction',
       rows: [
+        ['txid', e.txid],
         ['from', stripKind(e.source)],
         ['to', stripKind(e.target)],
-        ['amount', `${fmtBTC(e.value)} · ${fmtSats(e.value)}`],
-        ['txid', e.txid],
+        ['amount', fmtBTC(e.value)],
         ['block', e.height > 0 ? String(e.height) : 'unknown'],
         ['time', fmtTime(e.time) || 'unknown'],
       ],
@@ -259,9 +257,14 @@ function buildDetail(l: Layout, sel: NonNullable<Sel>): Detail | null {
   const n = l.nodes.find((x) => x.id === sel.id)
   if (!n) return null
   if (n.kind === 'address') {
+    let sent = 0
+    for (const e of l.edges) {
+      if (e.source === n.id) sent += e.value
+    }
     const rows: [string, string][] = [
       ['address', n.full],
-      ['received', `${fmtBTC(n.value)} · ${fmtSats(n.value)}`],
+      ['received', fmtBTC(n.value)],
+      ['sent', fmtBTC(sent)],
     ]
     if (n.cexName) rows.push(['entity', n.cexName])
     if (n.cex) rows.push(['cex', 'yes'])
