@@ -1,5 +1,6 @@
 /bitracer
 /bin/
+/build/
 *.db
 *.db-journal
 *.db-wal
@@ -7,7 +8,6 @@
 .env
 .worktrees/
 node_modules/
-web/dist/
+web/dist/*
+!web/dist/.gitkeep
 .DS_Store
-*.tsbuildinfo
-/build/

@@ -2,6 +2,7 @@ package etl
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -53,6 +54,8 @@ func (e *ETL) Run(ctx context.Context) error {
 	}
 }
 
+var errReorgParent = errors.New("parent hash mismatch")
+
 func (e *ETL) SyncBlocks(ctx context.Context) error {
 	info, err := e.rpc.Info(ctx)
 	if err != nil {
@@ -66,7 +69,7 @@ func (e *ETL) SyncBlocks(ctx context.Context) error {
 	if e.startBlock > start {
 		start = e.startBlock
 	}
-	for h := start; h <= info.Blocks; h++ {
+	for h := start; h <= info.Blocks; {
 		hash, err := e.rpc.BlockHash(ctx, h)
 		if err != nil {
 			return err
@@ -76,12 +79,26 @@ func (e *ETL) SyncBlocks(ctx context.Context) error {
 			return err
 		}
 		if stored != "" && stored != hash {
-			slog.Warn("reorg detected, resetting", "height", h)
+			slog.Warn("reorg detected: stored hash mismatch, resetting", "height", h)
 			if err := e.st.ResetFromHeight(ctx, h); err != nil {
 				return err
 			}
 		}
 		if err := e.processBlock(ctx, h, hash); err != nil {
+			if errors.Is(err, errReorgParent) {
+				if h < 2 {
+					return fmt.Errorf("parent mismatch at genesis-adjacent height %d", h)
+				}
+				slog.Warn("reorg detected: parent mismatch, unwinding", "height", h)
+				if err := e.st.ResetFromHeight(ctx, h-1); err != nil {
+					return err
+				}
+				if err := e.st.SetLastHeight(ctx, h-2); err != nil {
+					return err
+				}
+				h--
+				continue
+			}
 			return fmt.Errorf("block %d: %w", h, err)
 		}
 		if err := e.st.SetLastHeight(ctx, h); err != nil {
@@ -90,6 +107,7 @@ func (e *ETL) SyncBlocks(ctx context.Context) error {
 		if h%1000 == 0 {
 			slog.Info("synced", "height", h)
 		}
+		h++
 	}
 	return nil
 }
@@ -98,6 +116,15 @@ func (e *ETL) processBlock(ctx context.Context, height int64, hash string) error
 	blk, err := e.rpc.Block(ctx, hash)
 	if err != nil {
 		return err
+	}
+	if blk.PrevHash != "" {
+		prevStored, err := e.st.BlockHash(ctx, height-1)
+		if err != nil {
+			return err
+		}
+		if prevStored != "" && prevStored != blk.PrevHash {
+			return fmt.Errorf("%w at height %d", errReorgParent, height)
+		}
 	}
 	txRows := make([]store.TxRow, 0, len(blk.Txs))
 	outRows := make([]store.OutRow, 0, len(blk.Txs)*3)
