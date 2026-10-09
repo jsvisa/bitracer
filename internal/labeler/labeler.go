@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/jsvisa/bitracer/internal/alerts"
@@ -69,7 +70,7 @@ func (s *Service) ResolveAddress(ctx context.Context, addr string) (*labels.Labe
 		return nil, err
 	}
 	if cached != nil {
-		return &labels.Label{Name: cached.Label, Source: cached.Source, IsCEX: cached.IsCEX}, nil
+		return &labels.Label{Name: cached.Label, Source: cached.Source, IsCEX: cached.IsCEX, Kind: cached.TerminalKind}, nil
 	}
 	if s.reg == nil {
 		return nil, nil
@@ -80,18 +81,57 @@ func (s *Service) ResolveAddress(ctx context.Context, addr string) (*labels.Labe
 	}
 	info := store.AddressInfo{Address: addr}
 	if lbl != nil {
-		info = store.AddressInfo{Address: addr, Label: lbl.Name, Source: lbl.Source, IsCEX: lbl.IsCEX}
+		info = store.AddressInfo{
+			Address: addr, Label: lbl.Name, Source: lbl.Source,
+			IsCEX: lbl.IsCEX, IsTerminal: lbl.Kind != "", TerminalKind: lbl.Kind,
+		}
 	}
 	if err := s.st.UpsertAddress(ctx, info); err != nil {
 		return nil, err
 	}
-	if lbl != nil && lbl.IsCEX {
+	if lbl != nil && lbl.Kind != "" {
 		s.markTerminal(ctx, addr, lbl)
 	}
 	return lbl, nil
 }
 
+// TerminalKinds are the kinds accepted by the manual pin endpoint.
+var TerminalKinds = []string{"cex", "mixer", "service", "gambling", "darknet", "manual"}
+
+func ValidTerminalKind(kind string) bool {
+	for _, k := range TerminalKinds {
+		if k == kind {
+			return true
+		}
+	}
+	return false
+}
+
+// PinTerminal marks an address as a stop point by hand (for entities the
+// vendor does not label) and stops any case output already watching it.
+func (s *Service) PinTerminal(ctx context.Context, addr, kind string) error {
+	if kind == "" {
+		kind = "manual"
+	}
+	if !ValidTerminalKind(kind) {
+		return fmt.Errorf("kind must be one of %s", strings.Join(TerminalKinds, ", "))
+	}
+	if err := s.st.SetAddressTerminal(ctx, addr, kind); err != nil {
+		return err
+	}
+	s.markTerminal(ctx, addr, &labels.Label{Name: addr, Kind: kind})
+	return nil
+}
+
+func (s *Service) UnpinTerminal(ctx context.Context, addr string) error {
+	return s.st.ClearAddressTerminal(ctx, addr)
+}
+
 func (s *Service) markTerminal(ctx context.Context, addr string, lbl *labels.Label) {
+	kind := lbl.Kind
+	if kind == "" {
+		kind = "cex"
+	}
 	rows, err := s.st.WatchingByAddress(ctx, addr)
 	if err != nil {
 		slog.Error("watching lookup failed", "address", addr, "err", err)
@@ -106,11 +146,15 @@ func (s *Service) markTerminal(ctx context.Context, addr string, lbl *labels.Lab
 		if !flipped {
 			continue
 		}
+		entity := lbl.Name
+		if entity == "" {
+			entity = kind
+		}
 		msg := notify.Message{
-			Kind:      "cex",
+			Kind:      kind,
 			CaseID:    r.CaseID,
-			Headline:  fmt.Sprintf("%.8f BTC reached %s — STOP", btc.SatsToBTC(r.ValueSats), lbl.Name),
-			Entity:    lbl.Name,
+			Headline:  fmt.Sprintf("%.8f BTC reached %s — STOP", btc.SatsToBTC(r.ValueSats), entity),
+			Entity:    entity,
 			Txid:      r.Txid,
 			Address:   addr,
 			ValueSats: r.ValueSats,
@@ -118,9 +162,9 @@ func (s *Service) markTerminal(ctx context.Context, addr string, lbl *labels.Lab
 		}
 		if err := alerts.Emit(ctx, s.st, store.Alert{
 			CaseID: r.CaseID, Txid: r.Txid, Address: addr,
-			ValueSats: r.ValueSats, Depth: r.Depth, Kind: "cex",
+			ValueSats: r.ValueSats, Depth: r.Depth, Kind: kind,
 		}, msg); err != nil {
-			slog.Error("cex alert failed", "case", r.CaseID, "err", err)
+			slog.Error("terminal alert failed", "case", r.CaseID, "err", err)
 		}
 	}
 }

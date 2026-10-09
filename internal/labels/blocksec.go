@@ -56,6 +56,16 @@ type blocksecResponse struct {
 	Data    *blocksecData `json:"data"`
 }
 
+// TerminalCategories maps vendor category names to terminal kinds; a match
+// means the walker stops when funds reach the address.
+var TerminalCategories = map[string]string{
+	"EXCHANGE": "cex",
+	"MIXER":    "mixer",
+	"GAMBLING": "gambling",
+	"DARKNET":  "darknet",
+	"SERVICE":  "service",
+}
+
 func (b *Blocksec) Lookup(ctx context.Context, address string) (*Label, error) {
 	if b.apiKey == "" {
 		return nil, nil
@@ -100,16 +110,21 @@ func (b *Blocksec) Lookup(ctx context.Context, address string) (*Label, error) {
 		name = r.Data.MainEntityInfo.Entity
 	}
 	isCEX := false
+	kind := ""
 	if r.Data.MainEntityInfo != nil {
 		for _, c := range r.Data.MainEntityInfo.Categories {
-			if strings.EqualFold(c.Name, "EXCHANGE") {
-				isCEX = true
+			if k, ok := TerminalCategories[strings.ToUpper(strings.TrimSpace(c.Name))]; ok {
+				kind = k
+				isCEX = k == "cex"
 				break
 			}
 		}
 	}
+	if name == "" && kind != "" {
+		name = kind
+	}
 	if name == "" && !isCEX {
 		return nil, nil
 	}
-	return &Label{Name: name, Source: b.Name(), IsCEX: isCEX}, nil
+	return &Label{Name: name, Source: b.Name(), IsCEX: isCEX, Kind: kind}, nil
 }
