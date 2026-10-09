@@ -11,13 +11,12 @@ also draws the fund-flow graph from the local Postgres index.
 
 ```
 bitcoind (txindex=1)
-   |  JSON-RPC (getblock 2, waitfornewblock, gettxspendingprevout, getrawtransaction)
+   |  JSON-RPC (getblock 2, getblockchaininfo, getrawtransaction, getblockheader)
    v
 bitracer etl      full-chain indexer + case walker (no external calls)
   - indexes every tx/output/input from --start-block into Postgres
+  - follows the tip by polling getblockchaininfo (BITRACER_SYNC_INTERVAL)
   - watches case source txhashes and every descendant output >= min threshold
-  - mempool poll (gettxspendingprevout) for pre-confirmation alerts,
-    with eviction rollback (auto-degraded when the RPC forbids it)
   - reorg-safe (block-hash check + reset window)
   - stop-at-CEX uses only the local label cache
    |
@@ -120,11 +119,10 @@ lark `{"webhook": "https://open.larksuite.com/open-apis/bot/v2/hook/..."}`.
   dust branches are not followed.
 - A path stops when an output address is labeled CEX/exchange by the BlockSec
   provider, or at `depth_cap` / `branch_cap` per case.
-- Mempool spends are alerted immediately with `height=0`; if the spender is
-  evicted from the mempool the watch is rolled back. Unconfirmed descendants are
-  cleaned up too.
 - Reorgs: when the stored block hash at height H mismatches the chain, all
   index/watch data at >= H is reset and re-synced.
+- Spends are detected on block sync only (no mempool polling); alerts arrive
+  once the spending block is indexed.
 - Full-chain indexing from an old `--start-block` is heavy (billions of rows for
   whole-chain scans) — pick a start block near your case dates for reasonable
   footprint, and give Postgres real resources.

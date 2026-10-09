@@ -29,70 +29,21 @@ func (e *ETL) Run(ctx context.Context) error {
 	if err := e.st.SetDefaultMinSats(ctx, e.minSats); err != nil {
 		return err
 	}
-	blockDone := make(chan struct{}, 1)
-	go func() {
-		fails := 0
-		for {
-			if err := e.rpc.WaitForNewBlock(ctx, int(e.cfg.WaitTimeout/time.Second)); err != nil {
-				if ctx.Err() != nil {
-					return
-				}
-				fails++
-				backoff := 5 * time.Second
-				if fails > 3 {
-					backoff = e.cfg.MempoolEvery
-				}
-				if fails == 1 || fails%12 == 0 {
-					slog.Warn("waitfornewblock unavailable (tip-following falls back to resync ticker)", "err", err, "backoff", backoff)
-				}
-				time.Sleep(backoff)
-				continue
-			}
-			fails = 0
-			select {
-			case blockDone <- struct{}{}:
-			default:
-			}
-		}
-	}()
-	mempoolTick := time.NewTicker(e.cfg.MempoolEvery)
-	defer mempoolTick.Stop()
+	syncTick := time.NewTicker(e.cfg.SyncInterval)
+	defer syncTick.Stop()
 	seedTick := time.NewTicker(10 * time.Second)
 	defer seedTick.Stop()
-	resyncTick := time.NewTicker(15 * time.Second)
-	defer resyncTick.Stop()
 
 	if err := e.SyncBlocks(ctx); err != nil {
 		slog.Error("initial sync failed", "err", err)
 	}
-	mempoolFails := 0
-	mempoolDisabled := false
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-blockDone:
+		case <-syncTick.C:
 			if err := e.SyncBlocks(ctx); err != nil {
 				slog.Error("block sync failed", "err", err)
-			}
-		case <-resyncTick.C:
-			if err := e.SyncBlocks(ctx); err != nil {
-				slog.Error("block sync failed", "err", err)
-			}
-		case <-mempoolTick.C:
-			if mempoolDisabled {
-				continue
-			}
-			if err := e.PollMempool(ctx); err != nil {
-				mempoolFails++
-				if mempoolFails >= 3 {
-					mempoolDisabled = true
-					slog.Warn("mempool polling disabled after repeated rpc failures (spends will be detected on block sync)", "err", err)
-				} else {
-					slog.Warn("mempool poll failed", "err", err)
-				}
-			} else {
-				mempoolFails = 0
 			}
 		case <-seedTick.C:
 			if err := e.SeedPendingCases(ctx); err != nil {
@@ -153,11 +104,9 @@ func (e *ETL) processBlock(ctx context.Context, height int64, hash string) error
 	inRows := make([]store.InRow, 0, len(blk.Txs)*2)
 	blockOuts := map[string][]store.IndexedOut{}
 	spenderOf := map[string]string{}
-	txids := make([]string, 0, len(blk.Txs))
 
 	for _, tx := range blk.Txs {
 		txRows = append(txRows, store.TxRow{Txid: tx.Txid, Height: height, Ts: blk.Time})
-		txids = append(txids, tx.Txid)
 		outs := make([]store.IndexedOut, 0, len(tx.Vout))
 		for _, vout := range tx.Vout {
 			outRows = append(outRows, store.OutRow{Txid: tx.Txid, Vout: int32(vout.N), Address: vout.ScriptPubKey.Address, ValueSats: btc.Sats(vout.Value)})
@@ -183,9 +132,6 @@ func (e *ETL) processBlock(ctx context.Context, height int64, hash string) error
 		return err
 	}
 	if err := e.st.InsertInputs(ctx, inRows); err != nil {
-		return err
-	}
-	if err := e.st.UpdateWatchedHeights(ctx, txids, height); err != nil {
 		return err
 	}
 
@@ -239,82 +185,6 @@ func idxOf(tx *btc.Tx, txid string, vout uint32) uint32 {
 		}
 	}
 	return 0
-}
-
-func (e *ETL) PollMempool(ctx context.Context) error {
-	pending, err := e.st.PendingMempoolSpends(ctx)
-	if err != nil {
-		return err
-	}
-	watching, err := e.st.WatchingOutputs(ctx)
-	if err != nil {
-		return err
-	}
-	all := append(pending, watching...)
-	seen := map[string]bool{}
-	var outs []btc.Outpoint
-	for _, o := range all {
-		key := fmt.Sprintf("%s:%d", o.Txid, o.Vout)
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		outs = append(outs, btc.Outpoint{Txid: o.Txid, Vout: uint32(o.Vout)})
-	}
-	for i := 0; i < len(outs); i += 1000 {
-		end := i + 1000
-		if end > len(outs) {
-			end = len(outs)
-		}
-		res, err := e.rpc.SpendingPrevout(ctx, outs[i:end])
-		if err != nil {
-			return err
-		}
-		byKey := map[string]*btc.SpentPrevout{}
-		for j := range res {
-			sp := &res[j]
-			byKey[sp.Txid+":"+strconv.Itoa(int(sp.Vout))] = sp
-		}
-		for _, o := range all {
-			key := o.Txid + ":" + strconv.Itoa(int(o.Vout))
-			sp := byKey[key]
-			if o.SpentHeight != nil && *o.SpentHeight == 0 && (sp == nil || sp.SpendingTxid == nil) {
-				if err := e.st.RevertWatchedSpend(ctx, o.CaseID, o.Txid, o.Vout); err != nil {
-					return err
-				}
-				if o.SpentByTxid != nil {
-					if err := e.st.DeleteUnconfirmedFrom(ctx, o.CaseID, *o.SpentByTxid); err != nil {
-						return err
-					}
-				}
-				slog.Info("mempool spend evicted, reverted", "case", o.CaseID, "outpoint", key)
-				continue
-			}
-			if sp == nil || sp.SpendingTxid == nil || o.Status != "watching" {
-				continue
-			}
-			marked, err := e.st.MarkWatchedSpent(ctx, o.CaseID, o.Txid, o.Vout, *sp.SpendingTxid, 0)
-			if err != nil {
-				return err
-			}
-			if !marked {
-				continue
-			}
-			m := store.WatchedMatch{CaseID: o.CaseID, Txid: o.Txid, Vout: o.Vout, Address: o.Address, ValueSats: o.ValueSats, Depth: o.Depth}
-			spender, err := e.rpc.RawTx(ctx, *sp.SpendingTxid)
-			if err != nil {
-				return err
-			}
-			outs := make([]store.IndexedOut, 0, len(spender.Vout))
-			for _, vout := range spender.Vout {
-				outs = append(outs, store.IndexedOut{Txid: spender.Txid, Vout: int32(vout.N), Address: vout.ScriptPubKey.Address, ValueSats: btc.Sats(vout.Value)})
-			}
-			if err := e.afterSpend(ctx, m, spender.Txid, outs, 0, "mempool"); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
 }
 
 func (e *ETL) afterSpend(ctx context.Context, m store.WatchedMatch, spenderTxid string, outs []store.IndexedOut, height int64, kind string) error {

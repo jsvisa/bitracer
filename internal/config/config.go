@@ -19,8 +19,7 @@ type Config struct {
 	BlocksecLabelAPIKEY  string
 	BlocksecLabelChainID int
 	LabelInterval        time.Duration
-	WaitTimeout          time.Duration
-	MempoolEvery         time.Duration
+	SyncInterval         time.Duration
 }
 
 func Load() Config {
@@ -35,8 +34,7 @@ func Load() Config {
 		BlocksecLabelAPIKEY:  env("BLOCKSEC_LABEL_APIKEY", ""),
 		BlocksecLabelChainID: int(envInt("BLOCKSEC_LABEL_CHAIN_ID", labels.BitcoinChainID)),
 		LabelInterval:        envSec("BITRACER_LABEL_INTERVAL", 60),
-		WaitTimeout:          envSec("BITRACER_WAIT_TIMEOUT", 60),
-		MempoolEvery:         envSec("BITRACER_MEMPOOL_INTERVAL", 30),
+		SyncInterval:         envSec("BITRACER_SYNC_INTERVAL", 15),
 	}
 }
 

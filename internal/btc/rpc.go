@@ -68,11 +68,6 @@ func (c *Client) Call(ctx context.Context, method string, params ...any) (json.R
 	return rr.Result, nil
 }
 
-type Outpoint struct {
-	Txid string `json:"txid"`
-	Vout uint32 `json:"vout"`
-}
-
 type Info struct {
 	Blocks        int64  `json:"blocks"`
 	BestBlockHash string `json:"bestblockhash"`
@@ -171,30 +166,6 @@ func (c *Client) BlockHeaderHeight(ctx context.Context, hash string) (int64, err
 		return 0, err
 	}
 	return hdr.Height, nil
-}
-
-func (c *Client) WaitForNewBlock(ctx context.Context, timeoutSecs int) error {
-	_, err := c.Call(ctx, "waitfornewblock", timeoutSecs)
-	return err
-}
-
-type SpentPrevout struct {
-	Txid         string  `json:"txid"`
-	Vout         uint32  `json:"vout"`
-	SpendingTxid *string `json:"spending_txid"`
-	SpendingVin  *int    `json:"spending_vin"`
-}
-
-func (c *Client) SpendingPrevout(ctx context.Context, outs []Outpoint) ([]SpentPrevout, error) {
-	raw, err := c.Call(ctx, "gettxspendingprevout", outs)
-	if err != nil {
-		return nil, err
-	}
-	var res []SpentPrevout
-	if err := json.Unmarshal(raw, &res); err != nil {
-		return nil, err
-	}
-	return res, nil
 }
 
 func Sats(v float64) int64 {

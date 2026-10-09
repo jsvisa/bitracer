@@ -73,31 +73,6 @@ func (s *Store) MarkWatchedSpent(ctx context.Context, caseID int64, txid string,
 	return tag.RowsAffected() > 0, nil
 }
 
-func (s *Store) ConfirmWatchedSpend(ctx context.Context, caseID int64, txid string, vout int32, spenderTxid string, height int64) error {
-	_, err := s.pool.Exec(ctx,
-		`UPDATE watched_outputs SET spent_height = $5
-		 WHERE case_id = $1 AND txid = $2 AND vout = $3 AND spent_by_txid = $4 AND spent_height = 0`,
-		caseID, txid, vout, spenderTxid, height)
-	return err
-}
-
-func (s *Store) RevertWatchedSpend(ctx context.Context, caseID int64, txid string, vout int32) error {
-	_, err := s.pool.Exec(ctx,
-		`UPDATE watched_outputs SET status = 'watching', spent_by_txid = NULL, spent_height = NULL
-		 WHERE case_id = $1 AND txid = $2 AND vout = $3 AND spent_height = 0`,
-		caseID, txid, vout)
-	return err
-}
-
-func (s *Store) UpdateWatchedHeights(ctx context.Context, txids []string, height int64) error {
-	if len(txids) == 0 {
-		return nil
-	}
-	_, err := s.pool.Exec(ctx,
-		`UPDATE watched_outputs SET height = $2 WHERE txid = ANY($1) AND height = 0`, txids, height)
-	return err
-}
-
 func (s *Store) AddWatched(ctx context.Context, rows []WatchedRow) ([]WatchedRow, error) {
 	if len(rows) == 0 {
 		return nil, nil
@@ -145,10 +120,6 @@ func (s *Store) WatchingByCase(ctx context.Context, caseID int64) ([]WatchedRow,
 	return s.queryWatched(ctx,
 		`SELECT case_id, txid, vout, address, value_sats, depth, status, spent_by_txid, spent_height, height
 		 FROM watched_outputs WHERE case_id = `+strconv.FormatInt(caseID, 10)+` AND status = 'watching'`)
-}
-
-func (s *Store) PendingMempoolSpends(ctx context.Context) ([]WatchedRow, error) {
-	return s.queryWatched(ctx, `SELECT case_id, txid, vout, address, value_sats, depth, status, spent_by_txid, spent_height, height FROM watched_outputs WHERE spent_height = 0`)
 }
 
 func (s *Store) queryWatched(ctx context.Context, q string) ([]WatchedRow, error) {
@@ -243,41 +214,6 @@ func (s *Store) CountWatched(ctx context.Context, caseID int64) (int64, error) {
 	var n int64
 	err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM watched_outputs WHERE case_id = $1`, caseID).Scan(&n)
 	return n, err
-}
-
-func (s *Store) DeleteUnconfirmedFrom(ctx context.Context, caseID int64, txid string) error {
-	frontier := []string{txid}
-	seen := map[string]bool{txid: true}
-	for len(frontier) > 0 {
-		var next []string
-		for _, t := range frontier {
-			_, err := s.pool.Exec(ctx,
-				`DELETE FROM watched_outputs WHERE case_id = $1 AND height = 0 AND spent_by_txid = $2`,
-				caseID, t)
-			if err != nil {
-				return err
-			}
-			rows, err := s.pool.Query(ctx,
-				`SELECT DISTINCT txid FROM watched_outputs WHERE case_id = $1 AND height = 0 AND spent_by_txid = $2`, caseID, t)
-			if err != nil {
-				return err
-			}
-			for rows.Next() {
-				var child string
-				if err := rows.Scan(&child); err != nil {
-					rows.Close()
-					return err
-				}
-				if !seen[child] {
-					seen[child] = true
-					next = append(next, child)
-				}
-			}
-			rows.Close()
-		}
-		frontier = next
-	}
-	return nil
 }
 
 type AddressInfo struct {
