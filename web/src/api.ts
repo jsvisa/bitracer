@@ -21,6 +21,11 @@ export interface Channel {
   config: Record<string, string>
 }
 
+export interface ChannelInput {
+  type: string
+  config: Record<string, string>
+}
+
 export interface Alert {
   id: number
   case_id: number
@@ -71,8 +76,11 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   listCases: () => req<Case[]>('/api/cases'),
-  createCase: (name: string, minBTC?: number) =>
-    req<Case>('/api/cases', { method: 'POST', body: JSON.stringify({ name, min_btc: minBTC }) }),
+  createCase: (name: string, minBTC?: number, channel?: ChannelInput) =>
+    req<Case>('/api/cases', {
+      method: 'POST',
+      body: JSON.stringify({ name, min_btc: minBTC, channel }),
+    }),
   deleteCase: (id: number) => req<void>(`/api/cases/${id}`, { method: 'DELETE' }),
   setCaseStatus: (id: number, status: string) =>
     req<void>(`/api/cases/${id}`, { method: 'PATCH', body: JSON.stringify({ status }) }),

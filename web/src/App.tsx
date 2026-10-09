@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { api, type Alert, type Case, type CaseTx, type Channel, type GraphData } from './api'
+import { api, type Alert, type Case, type CaseTx, type Channel, type ChannelInput, type GraphData } from './api'
 import { GraphView } from './GraphView'
 
 export function App() {
@@ -48,18 +48,38 @@ export function App() {
   )
 }
 
+const channelLabels: Record<string, [string, string]> = {
+  slack: ['webhook url', ''],
+  telegram: ['bot token', 'chat id'],
+  lark: ['webhook url', ''],
+}
+
 function NewCaseForm({ onCreated }: { onCreated: (c: Case) => void }) {
   const [name, setName] = useState('')
   const [minBTC, setMinBTC] = useState('')
+  const [chType, setChType] = useState('none')
+  const [chField1, setChField1] = useState('')
+  const [chField2, setChField2] = useState('')
   const [err, setErr] = useState('')
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
     setErr('')
+    let channel: ChannelInput | undefined
+    if (chType !== 'none') {
+      const config: Record<string, string> =
+        chType === 'telegram'
+          ? { token: chField1.trim(), chat_id: chField2.trim() }
+          : { webhook: chField1.trim() }
+      channel = { type: chType, config }
+    }
     try {
-      const c = await api.createCase(name, minBTC ? parseFloat(minBTC) : undefined)
+      const c = await api.createCase(name, minBTC ? parseFloat(minBTC) : undefined, channel)
       setName('')
       setMinBTC('')
+      setChType('none')
+      setChField1('')
+      setChField2('')
       onCreated(c)
     } catch (e) {
       setErr(String(e))
@@ -71,6 +91,37 @@ function NewCaseForm({ onCreated }: { onCreated: (c: Case) => void }) {
       <h3>new case</h3>
       <input placeholder="case name" value={name} onChange={(e) => setName(e.target.value)} required />
       <input placeholder="min BTC (default 0.1)" value={minBTC} onChange={(e) => setMinBTC(e.target.value)} />
+      <select
+        value={chType}
+        onChange={(e) => {
+          setChType(e.target.value)
+          setChField1('')
+          setChField2('')
+        }}
+      >
+        <option value="none">no notify channel</option>
+        <option value="slack">slack</option>
+        <option value="telegram">telegram</option>
+        <option value="lark">lark</option>
+      </select>
+      {chType !== 'none' && (
+        <>
+          <input
+            placeholder={channelLabels[chType][0]}
+            value={chField1}
+            onChange={(e) => setChField1(e.target.value)}
+            required
+          />
+          {channelLabels[chType][1] && (
+            <input
+              placeholder={channelLabels[chType][1]}
+              value={chField2}
+              onChange={(e) => setChField2(e.target.value)}
+              required
+            />
+          )}
+        </>
+      )}
       {err && <p className="err">{err}</p>}
       <button type="submit">create case</button>
     </form>
@@ -202,12 +253,6 @@ function ChannelsTab({ caseId, channels, onChanged }: { caseId: number; channels
   const [field2, setField2] = useState('')
   const [err, setErr] = useState('')
 
-  const labels: Record<string, [string, string]> = {
-    slack: ['webhook url', ''],
-    telegram: ['bot token', 'chat id'],
-    lark: ['webhook url', ''],
-  }
-
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
     setErr('')
@@ -233,9 +278,9 @@ function ChannelsTab({ caseId, channels, onChanged }: { caseId: number; channels
           <option value="telegram">telegram</option>
           <option value="lark">lark</option>
         </select>
-        <input placeholder={labels[type][0]} value={field1} onChange={(e) => setField1(e.target.value)} required />
-        {labels[type][1] && (
-          <input placeholder={labels[type][1]} value={field2} onChange={(e) => setField2(e.target.value)} required />
+        <input placeholder={channelLabels[type][0]} value={field1} onChange={(e) => setField1(e.target.value)} required />
+        {channelLabels[type][1] && (
+          <input placeholder={channelLabels[type][1]} value={field2} onChange={(e) => setField2(e.target.value)} required />
         )}
         <button type="submit">add channel</button>
       </form>

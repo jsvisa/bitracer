@@ -57,12 +57,18 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+type channelBody struct {
+	Type   string          `json:"type"`
+	Config json.RawMessage `json:"config"`
+}
+
 type caseBody struct {
-	Name      string   `json:"name"`
-	Status    string   `json:"status"`
-	MinBTC    *float64 `json:"min_btc"`
-	DepthCap  *int32   `json:"depth_cap"`
-	BranchCap *int32   `json:"branch_cap"`
+	Name      string       `json:"name"`
+	Status    string       `json:"status"`
+	MinBTC    *float64     `json:"min_btc"`
+	DepthCap  *int32       `json:"depth_cap"`
+	BranchCap *int32       `json:"branch_cap"`
+	Channel   *channelBody `json:"channel"`
 }
 
 func (s *Server) createCase(w http.ResponseWriter, r *http.Request) {
@@ -74,6 +80,14 @@ func (s *Server) createCase(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(b.Name) == "" {
 		writeErr(w, http.StatusBadRequest, errors.New("name required"))
 		return
+	}
+	var ch *channelBody
+	if b.Channel != nil && strings.TrimSpace(b.Channel.Type) != "" {
+		if _, err := validateChannel(b.Channel.Type, b.Channel.Config); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		ch = b.Channel
 	}
 	var minSats *int64
 	if b.MinBTC != nil && *b.MinBTC > 0 {
@@ -91,6 +105,12 @@ func (s *Server) createCase(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
+	}
+	if ch != nil {
+		if _, err := s.st.AddChannel(r.Context(), c.ID, ch.Type, ch.Config); err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
 	}
 	writeJSON(w, http.StatusCreated, c)
 }
