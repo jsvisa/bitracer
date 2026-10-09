@@ -1,103 +1,411 @@
-import { useEffect, useRef } from 'react'
-import cytoscape, { type Core, type ElementDefinition } from 'cytoscape'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import dagre from '@dagrejs/dagre'
 import type { GraphData } from './api'
 
-export function GraphView({ data }: { data: GraphData | null }) {
-  const ref = useRef<HTMLDivElement>(null)
-  const cyRef = useRef<Core | null>(null)
+const ORANGE = '#f38a2f'
+const CARD = '#24262b'
+const CARD_BORDER = '#3d4148'
+const TEXT = '#e8eaed'
+const MUTED = '#9aa0a6'
 
-  useEffect(() => {
-    if (!ref.current) return
-    const cy = cytoscape({
-      container: ref.current,
-      style: [
-        {
-          selector: 'node[type = "tx"]',
-          style: {
-            shape: 'round-rectangle',
-            'background-color': '#3b4252',
-            label: 'data(label)',
-            color: '#d8dee9',
-            'font-size': 9,
-            'text-valign': 'center',
-            'text-halign': 'center',
-            width: 66,
-            height: 26,
-          },
-        },
-        {
-          selector: 'node[type = "address"]',
-          style: {
-            shape: 'ellipse',
-            'background-color': '#434c5e',
-            'border-width': 2,
-            'border-color': '#5b8def',
-            label: 'data(label)',
-            color: '#eceff4',
-            'font-size': 9,
-            'text-valign': 'bottom',
-            'text-halign': 'center',
-            width: 34,
-            height: 34,
-          },
-        },
-        {
-          selector: 'node[cex = true]',
-          style: {
-            'background-color': '#e5484d',
-            'border-color': '#febc2e',
-            width: 44,
-            height: 44,
-          },
-        },
-        {
-          selector: 'edge',
-          style: {
-            width: '2px',
-            'line-color': '#7b88a1',
-            'target-arrow-color': '#7b88a1',
-            'target-arrow-shape': 'triangle',
-            'curve-style': 'bezier',
-            label: 'data(label)',
-            'font-size': 8,
-            color: '#9aa5b8',
-            'text-background-color': '#2e3440',
-            'text-background-opacity': 1,
-            'text-background-padding': '2px',
-          },
-        },
-      ],
-      layout: { name: 'cose', animate: true, padding: 30 },
+interface FlowNode {
+  id: string
+  kind: 'address' | 'tx'
+  label: string
+  tip: string
+  cex: boolean
+  cexName: string
+  highlighted: boolean
+}
+
+interface FlowEdge {
+  id: string
+  source: string
+  target: string
+  value: number
+  height: number
+  txid: string
+}
+
+interface LaidNode extends FlowNode {
+  x: number
+  y: number
+  w: number
+  h: number
+}
+
+interface LaidEdge extends FlowEdge {
+  path: string
+  lx: number
+  ly: number
+  fontSize: number
+}
+
+interface Layout {
+  nodes: LaidNode[]
+  edges: LaidEdge[]
+  bbox: { minX: number; minY: number; w: number; h: number }
+}
+
+const fmtBTC = (v: number) =>
+  `${v.toFixed(8).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '')} BTC`
+
+const edgeLabel = (e: FlowEdge) => (e.height > 0 ? `[${e.height}] ${fmtBTC(e.value)}` : fmtBTC(e.value))
+
+const shortTxid = (id: string) => (id.length <= 12 ? id : `${id.slice(0, 10)}…`)
+
+function collapse(data: GraphData): { nodes: FlowNode[]; edges: FlowEdge[] } {
+  const nodes = new Map<string, FlowNode>()
+  const txIn = new Map<string, { from: string; value: number; height: number }[]>()
+  const txOut = new Map<string, { to: string; value: number }[]>()
+  const txSeen = new Set<string>()
+
+  for (const n of data.nodes) {
+    if (n.type === 'address') {
+      nodes.set(n.id, {
+        id: n.id,
+        kind: 'address',
+        label: n.label,
+        tip: `${n.id.slice(2)}${n.cex_name ? ` · ${n.cex_name}` : ''}`,
+        cex: n.cex,
+        cexName: n.cex_name || '',
+        highlighted: n.cex || !!n.watched,
+      })
+    } else {
+      txSeen.add(n.id)
+    }
+  }
+  for (const e of data.edges) {
+    if (e.source.startsWith('t:')) {
+      txSeen.add(e.source)
+      const arr = txOut.get(e.source) || []
+      arr.push({ to: e.target, value: e.value_btc })
+      txOut.set(e.source, arr)
+    } else {
+      const arr = txIn.get(e.target) || []
+      if (!arr.some((i) => i.from === e.source)) {
+        arr.push({ from: e.source, value: e.value_btc, height: e.height })
+      }
+      txIn.set(e.target, arr)
+    }
+  }
+
+  const edges: FlowEdge[] = []
+  for (const tx of txSeen) {
+    const txid = tx.slice(2)
+    const ins = txIn.get(tx) || []
+    const outs = txOut.get(tx) || []
+    if (ins.length === 0) {
+      nodes.set(tx, {
+        id: tx,
+        kind: 'tx',
+        label: shortTxid(txid),
+        tip: txid,
+        cex: false,
+        cexName: '',
+        highlighted: txid === data.txid,
+      })
+      for (const o of outs) {
+        edges.push({ id: `${tx}->${o.to}`, source: tx, target: o.to, value: o.value, height: 0, txid })
+      }
+    } else if (outs.length === 0) {
+      nodes.set(tx, {
+        id: tx,
+        kind: 'tx',
+        label: shortTxid(txid),
+        tip: txid,
+        cex: false,
+        cexName: '',
+        highlighted: false,
+      })
+      for (const i of ins) {
+        edges.push({ id: `${i.from}->${tx}`, source: i.from, target: tx, value: i.value, height: i.height, txid })
+      }
+    } else {
+      for (const i of ins) {
+        for (const o of outs) {
+          edges.push({ id: `${i.from}->${o.to}@${tx}`, source: i.from, target: o.to, value: o.value, height: i.height, txid })
+        }
+      }
+    }
+  }
+  return { nodes: [...nodes.values()], edges }
+}
+
+function buildLayout(flow: { nodes: FlowNode[]; edges: FlowEdge[] }): Layout {
+  const g = new dagre.graphlib.Graph()
+  g.setGraph({ rankdir: 'LR', nodesep: 26, ranksep: 200, marginx: 24, marginy: 24 })
+  g.setDefaultEdgeLabel(() => ({}))
+
+  for (const n of flow.nodes) {
+    const w = n.kind === 'tx' ? 160 : Math.max(210, 56 + n.label.length * 8 + 20)
+    const h = n.kind === 'tx' ? 40 : n.cexName ? 64 : 48
+    g.setNode(n.id, { width: w, height: h })
+  }
+  const pairCount = new Map<string, number>()
+  for (const e of flow.edges) {
+    const key = `${e.source}\u0000${e.target}`
+    pairCount.set(key, (pairCount.get(key) || 0) + 1)
+  }
+  const seenPair = new Set<string>()
+  for (const e of flow.edges) {
+    const key = `${e.source}\u0000${e.target}`
+    if (seenPair.has(key)) continue
+    seenPair.add(key)
+    g.setEdge(e.source, e.target, {})
+  }
+  dagre.layout(g)
+
+  const nodes: LaidNode[] = flow.nodes.map((n) => {
+    const gn = g.node(n.id) as { x: number; y: number; width: number; height: number }
+    return { ...n, x: gn.x, y: gn.y, w: gn.width, h: gn.height }
+  })
+  const byId = new Map(nodes.map((n) => [n.id, n]))
+  const pairIdx = new Map<string, number>()
+  const edgesLaid: LaidEdge[] = []
+  for (const e of flow.edges) {
+    const s = byId.get(e.source)
+    const t = byId.get(e.target)
+    if (!s || !t) continue
+    const key = `${e.source}\u0000${e.target}`
+    const i = pairIdx.get(key) || 0
+    pairIdx.set(key, i + 1)
+    const count = pairCount.get(key) || 1
+    const off = (i - (count - 1) / 2) * 14
+    const x0 = s.x + s.w / 2
+    const y0 = s.y + off
+    const x1 = t.x - t.w / 2
+    const y1 = t.y + off
+    const mx = (x0 + x1) / 2
+    const path = `M ${x0} ${y0} C ${mx} ${y0}, ${mx} ${y1}, ${x1 - 8} ${y1}`
+    const u = 0.45
+    const v = 1 - u
+    const bx = v * v * v * x0 + 3 * v * v * u * mx + 3 * v * u * u * mx + u * u * u * x1
+    const by =
+      v * v * v * y0 + 3 * v * v * u * y0 + 3 * v * u * u * y1 + u * u * u * y1
+    const want = edgeLabel(e).length * 6.8
+    const fontSize = Math.max(9, Math.min(13, (13 * (x1 - x0 - 20)) / Math.max(want, 1)))
+    edgesLaid.push({ ...e, path, lx: bx, ly: by, fontSize })
+  }
+
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  for (const n of nodes) {
+    minX = Math.min(minX, n.x - n.w / 2)
+    minY = Math.min(minY, n.y - n.h / 2)
+    maxX = Math.max(maxX, n.x + n.w / 2)
+    maxY = Math.max(maxY, n.y + n.h / 2)
+  }
+  const bbox =
+    nodes.length > 0
+      ? { minX, minY, w: Math.max(1, maxX - minX), h: Math.max(1, maxY - minY) }
+      : { minX: 0, minY: 0, w: 1, h: 1 }
+  return { nodes, edges: edgesLaid, bbox }
+}
+
+export function GraphView({ data }: { data: GraphData | null }) {
+  const wrapRef = useRef<HTMLDivElement>(null)
+  const layoutRef = useRef<Layout | null>(null)
+  const panRef = useRef<{ px: number; py: number; vx: number; vy: number } | null>(null)
+  const [layout, setLayout] = useState<Layout | null>(null)
+  const [view, setView] = useState({ x: 0, y: 0, k: 1 })
+  const [dragging, setDragging] = useState(false)
+
+  const fit = useCallback(() => {
+    const el = wrapRef.current
+    const l = layoutRef.current
+    if (!el || !l) return
+    const cw = el.clientWidth
+    const ch = el.clientHeight
+    const pad = 70
+    const k = Math.min(cw / (l.bbox.w + pad * 2), ch / (l.bbox.h + pad * 2), 1.5) * 0.92
+    setView({
+      k,
+      x: (cw - l.bbox.w * k) / 2 - (l.bbox.minX - pad) * k,
+      y: (ch - l.bbox.h * k) / 2 - (l.bbox.minY - pad) * k,
     })
-    cyRef.current = cy
-    return () => cy.destroy()
   }, [])
 
   useEffect(() => {
-    const cy = cyRef.current
-    if (!cy || !data) return
-    const els: ElementDefinition[] = [
-      ...data.nodes.map((n) => ({
-        data: {
-          id: n.id,
-          type: n.type,
-          label: n.cex ? `${n.label}\n[${n.cex_name || 'CEX'}]` : n.label,
-          cex: n.cex,
-        },
-      })),
-      ...data.edges.map((e) => ({
-        data: {
-          id: e.id,
-          source: e.source,
-          target: e.target,
-          label: `${e.value_btc.toFixed(4)} BTC`,
-        },
-      })),
-    ]
-    cy.elements().remove()
-    cy.add(els)
-    cy.layout({ name: 'cose', animate: true, padding: 30 }).run()
-  }, [data])
+    if (!data) {
+      layoutRef.current = null
+      setLayout(null)
+      return
+    }
+    const l = buildLayout(collapse(data))
+    layoutRef.current = l
+    setLayout(l)
+    requestAnimationFrame(fit)
+  }, [data, fit])
 
-  return <div ref={ref} style={{ flex: 1, minHeight: 500, background: '#2e3440', borderRadius: 8 }} />
+  useEffect(() => {
+    const el = wrapRef.current
+    if (!el) return
+    const onWheel = (ev: WheelEvent) => {
+      ev.preventDefault()
+      const rect = el.getBoundingClientRect()
+      const cx = ev.clientX - rect.left
+      const cy = ev.clientY - rect.top
+      setView((v) => {
+        const k = Math.min(3, Math.max(0.12, v.k * (ev.deltaY < 0 ? 1.1 : 1 / 1.1)))
+        const s = k / v.k
+        return { k, x: cx - (cx - v.x) * s, y: cy - (cy - v.y) * s }
+      })
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [])
+
+  const zoomBy = (f: number) =>
+    setView((v) => {
+      const el = wrapRef.current
+      const cx = (el?.clientWidth || 0) / 2
+      const cy = (el?.clientHeight || 0) / 2
+      const k = Math.min(3, Math.max(0.12, v.k * f))
+      const s = k / v.k
+      return { k, x: cx - (cx - v.x) * s, y: cy - (cy - v.y) * s }
+    })
+
+  return (
+    <div
+      className={`graph-canvas${dragging ? ' dragging' : ''}`}
+      ref={wrapRef}
+      onPointerDown={(e) => {
+        panRef.current = { px: e.clientX, py: e.clientY, vx: view.x, vy: view.y }
+        setDragging(true)
+        e.currentTarget.setPointerCapture(e.pointerId)
+      }}
+      onPointerMove={(e) => {
+        const p = panRef.current
+        if (!p) return
+        setView((v) => ({ ...v, x: p.vx + (e.clientX - p.px), y: p.vy + (e.clientY - p.py) }))
+      }}
+      onPointerUp={() => {
+        panRef.current = null
+        setDragging(false)
+      }}
+      onDoubleClick={fit}
+    >
+      <div className="graph-watermark">bitracer</div>
+      <svg width="100%" height="100%">
+        <defs>
+          <marker
+            id="ms-arrow"
+            markerUnits="userSpaceOnUse"
+            markerWidth="16"
+            markerHeight="14"
+            refX="14"
+            refY="7"
+            orient="auto"
+          >
+            <path d="M1,1 L15,7 L1,13 Z" fill={ORANGE} />
+          </marker>
+        </defs>
+        {layout && (
+          <g transform={`translate(${view.x},${view.y}) scale(${view.k})`}>
+            {layout.edges.map((e) => (
+              <g key={e.id}>
+                <path d={e.path} fill="none" stroke={ORANGE} strokeWidth={3} markerEnd="url(#ms-arrow)">
+                  <title>{`${e.txid}\nheight ${e.height || '?'} · ${fmtBTC(e.value)}`}</title>
+                </path>
+                <text
+                  x={e.lx}
+                  y={e.ly - 10}
+                  textAnchor="middle"
+                  className="graph-edge-label"
+                  fontSize={e.fontSize}
+                >
+                  {e.height > 0 ? (
+                    <>
+                      <tspan fill={ORANGE}>[{e.height}] </tspan>
+                      <tspan fill={TEXT}>{fmtBTC(e.value)}</tspan>
+                    </>
+                  ) : (
+                    <tspan fill={TEXT}>{fmtBTC(e.value)}</tspan>
+                  )}
+                </text>
+              </g>
+            ))}
+            {layout.nodes.map((n) => (
+              <g key={n.id} transform={`translate(${n.x - n.w / 2},${n.y - n.h / 2})`}>
+                <title>{n.tip}</title>
+                <rect
+                  width={n.w}
+                  height={n.h}
+                  rx={10}
+                  fill={CARD}
+                  stroke={n.highlighted ? ORANGE : CARD_BORDER}
+                  strokeWidth={n.highlighted ? 2 : 1}
+                />
+                {n.kind === 'address' ? (
+                  <>
+                    <circle cx={24} cy={n.h / 2} r={14} fill={ORANGE} />
+                    <text
+                      x={24}
+                      y={n.h / 2 + 1}
+                      textAnchor="middle"
+                      dominantBaseline="central"
+                      fontSize={15}
+                      fontWeight={700}
+                      fill="#ffffff"
+                    >
+                      ₿
+                    </text>
+                    <text
+                      x={46}
+                      y={n.cexName ? n.h / 2 - 8 : n.h / 2 + 1}
+                      dominantBaseline="central"
+                      className="graph-addr"
+                    >
+                      {n.label}
+                    </text>
+                    {n.cexName && (
+                      <text
+                        x={46}
+                        y={n.h / 2 + 12}
+                        dominantBaseline="central"
+                        fontSize={11}
+                        fontWeight={600}
+                        fill={ORANGE}
+                      >
+                        {n.cexName}
+                      </text>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <rect x={8} y={n.h / 2 - 11} width={22} height={22} rx={6} fill="#3d4148" />
+                    <text
+                      x={19}
+                      y={n.h / 2 + 1}
+                      textAnchor="middle"
+                      dominantBaseline="central"
+                      fontSize={9}
+                      fontWeight={700}
+                      fill={MUTED}
+                    >
+                      TX
+                    </text>
+                    <text x={38} y={n.h / 2 + 1} dominantBaseline="central" className="graph-addr">
+                      {n.label}
+                    </text>
+                  </>
+                )}
+              </g>
+            ))}
+          </g>
+        )}
+      </svg>
+      {layout && (
+        <div className="graph-zoom">
+          <button onClick={() => zoomBy(1 / 1.2)}>−</button>
+          <span>{Math.round(view.k * 100)}%</span>
+          <button onClick={() => zoomBy(1.2)}>+</button>
+          <button onClick={fit} title="fit">⤢</button>
+        </div>
+      )}
+    </div>
+  )
 }

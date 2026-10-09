@@ -278,3 +278,76 @@ a:hover {
   gap: 8px;
   flex: 1;
 }
+
+.graph-canvas {
+  position: relative;
+  flex: 1;
+  min-height: 480px;
+  background: #36393f;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.graph-canvas svg {
+  display: block;
+  cursor: grab;
+}
+
+.graph-canvas.dragging svg {
+  cursor: grabbing;
+}
+
+.graph-watermark {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 72px;
+  font-weight: 700;
+  letter-spacing: 6px;
+  color: rgba(255, 255, 255, 0.035);
+  pointer-events: none;
+  user-select: none;
+}
+
+.graph-addr {
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 12.5px;
+  fill: #e8eaed;
+}
+
+.graph-edge-label {
+  font-family: -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-size: 13px;
+  pointer-events: none;
+}
+
+.graph-zoom {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  background: rgba(20, 21, 24, 0.85);
+  border-radius: 8px;
+  padding: 3px 6px;
+  font-size: 12px;
+  color: #e8eaed;
+}
+
+.graph-zoom span {
+  min-width: 42px;
+  text-align: center;
+}
+
+.graph-zoom button {
+  background: transparent;
+  padding: 2px 8px;
+  font-size: 14px;
+}
+
+.graph-zoom button:hover {
+  background: #3d4148;
+}
