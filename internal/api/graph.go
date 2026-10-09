@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -35,19 +36,19 @@ const graphRowCap = 20000
 
 func (s *Server) graph(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	txid := strings.ToLower(q.Get("txid"))
 	depth := 6
 	if d, err := strconv.Atoi(q.Get("depth")); err == nil && d > 0 && d <= 30 {
 		depth = d
 	}
-	if txid == "" {
-		writeErr(w, http.StatusBadRequest, errors.New("txid required"))
+	roots, err := s.graphRoots(r.Context(), q)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
 	nodes := map[string]*graphNode{}
 	edges := map[string]*graphEdge{}
 	total := 0
-	curTxids := []string{txid}
+	curTxids := roots
 	visitedTx := map[string]bool{}
 
 	for d := 0; d <= depth && len(curTxids) > 0 && total < graphRowCap; d++ {
@@ -90,9 +91,11 @@ func (s *Server) graph(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(nodes) == 0 {
-		if err := s.liveTxGraph(r.Context(), txid, nodes); err != nil {
-			writeErr(w, http.StatusInternalServerError, err)
-			return
+		for _, txid := range roots {
+			if err := s.liveTxGraph(r.Context(), txid, nodes); err != nil {
+				writeErr(w, http.StatusInternalServerError, err)
+				return
+			}
 		}
 	}
 	if err := s.markCEX(r.Context(), nodes); err != nil {
@@ -107,7 +110,35 @@ func (s *Server) graph(w http.ResponseWriter, r *http.Request) {
 	for _, e := range edges {
 		el = append(el, *e)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"nodes": nl, "edges": el, "txid": txid})
+	writeJSON(w, http.StatusOK, map[string]any{"nodes": nl, "edges": el, "txids": roots})
+}
+
+// graphRoots resolves the seed txids for a graph walk: either every txhash
+// tracked on a case (case_id) or a single explicit txhash (txid).
+func (s *Server) graphRoots(ctx context.Context, q url.Values) ([]string, error) {
+	if cs := q.Get("case_id"); cs != "" {
+		id, err := strconv.ParseInt(cs, 10, 64)
+		if err != nil {
+			return nil, err
+		}
+		txs, err := s.st.ListCaseTxs(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		roots := make([]string, 0, len(txs))
+		for _, t := range txs {
+			roots = append(roots, t.Txid)
+		}
+		if len(roots) == 0 {
+			return nil, errors.New("case has no tracked txhashes")
+		}
+		return roots, nil
+	}
+	txid := strings.ToLower(q.Get("txid"))
+	if txid == "" {
+		return nil, errors.New("case_id or txid required")
+	}
+	return []string{txid}, nil
 }
 
 var errGraphQuery = errors.New("graph query failed")

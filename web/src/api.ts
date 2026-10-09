@@ -54,7 +54,7 @@ export interface GraphEdge {
 export interface GraphData {
   nodes: GraphNode[]
   edges: GraphEdge[]
-  txid: string
+  txids: string[]
 }
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
@@ -91,8 +91,8 @@ export const api = {
   listAlerts: (caseID?: number) =>
     req<Alert[]>(`/api/alerts?limit=200${caseID ? `&case_id=${caseID}` : ''}`),
 
-  graph: (txid: string, depth = 6) =>
-    req<GraphData>(`/api/graph?txid=${txid}&depth=${depth}`),
+  caseGraph: (id: number, depth = 6) =>
+    req<GraphData>(`/api/graph?case_id=${id}&depth=${depth}`),
 }
 
 export const satsToBTC = (s: number) => s / 1e8

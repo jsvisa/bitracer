@@ -125,7 +125,7 @@ function CaseDetail({ id, onChanged }: { id: number; onChanged: () => void }) {
       </div>
       {tab === 'txs' && <TxsTab caseId={id} txs={txs} onChanged={refresh} />}
       {tab === 'channels' && <ChannelsTab caseId={id} channels={channels} onChanged={refresh} />}
-      {tab === 'graph' && <GraphTab txs={txs} />}
+      {tab === 'graph' && <GraphTab caseId={id} txs={txs} />}
       {tab === 'alerts' && <AlertsTab alerts={alerts} />}
     </div>
   )
@@ -281,20 +281,31 @@ function ChannelsTab({ caseId, channels, onChanged }: { caseId: number; channels
   )
 }
 
-function GraphTab({ txs }: { txs: CaseTx[] }) {
-  const [txid, setTxid] = useState('')
+function GraphTab({ caseId, txs }: { caseId: number; txs: CaseTx[] }) {
   const [depth, setDepth] = useState(6)
   const [data, setData] = useState<GraphData | null>(null)
   const [err, setErr] = useState('')
+  const [loading, setLoading] = useState(false)
 
-  const load = async (id: string, d: number) => {
-    setErr('')
-    try {
-      setData(await api.graph(id, d))
-    } catch (e) {
-      setErr(String(e))
-    }
-  }
+  const load = useCallback(
+    async (d: number) => {
+      setLoading(true)
+      setErr('')
+      try {
+        setData(await api.caseGraph(caseId, d))
+      } catch (e) {
+        setErr(String(e))
+        setData(null)
+      } finally {
+        setLoading(false)
+      }
+    },
+    [caseId],
+  )
+
+  useEffect(() => {
+    load(depth)
+  }, [load])
 
   return (
     <div className="graph-wrap">
@@ -302,40 +313,24 @@ function GraphTab({ txs }: { txs: CaseTx[] }) {
         className="row wrap"
         onSubmit={(e) => {
           e.preventDefault()
-          load(txid.trim(), depth)
+          load(depth)
         }}
       >
-        <input
-          placeholder="txhash (or pick a tracked one)"
-          value={txid}
-          onChange={(e) => setTxid(e.target.value)}
-        />
+        <span>
+          case #{caseId}: {txs.length} tracked txhash{txs.length === 1 ? '' : 'es'}
+        </span>
         <select value={depth} onChange={(e) => setDepth(parseInt(e.target.value))}>
           {[3, 6, 10, 15, 20].map((d) => (
             <option key={d} value={d}>depth {d}</option>
           ))}
         </select>
-        <button type="submit">draw</button>
-        {txs.length > 0 && (
-          <select
-            value=""
-            onChange={(e) => {
-              if (e.target.value) {
-                setTxid(e.target.value)
-                load(e.target.value, depth)
-              }
-            }}
-          >
-            <option value="">tracked txhashes…</option>
-            {txs.map((t) => (
-              <option key={t.txid} value={t.txid}>{t.txid.slice(0, 18)}…</option>
-            ))}
-          </select>
-        )}
+        <button type="submit" disabled={loading}>
+          {loading ? 'drawing…' : 'redraw'}
+        </button>
       </form>
       {err && <p className="err">{err}</p>}
       {data == null ? (
-        <p className="empty">enter a txhash to draw the fund flow</p>
+        <p className="empty">{loading ? 'drawing case fund flow…' : 'no graph data'}</p>
       ) : (
         <GraphView data={data} />
       )}
