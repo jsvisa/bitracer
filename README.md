@@ -137,6 +137,10 @@ lark `{"webhook": "https://open.larksuite.com/open-apis/bot/v2/hook/..."}`.
   index/watch data at >= H is reset and re-synced.
 - Spends are detected on block sync only (no mempool polling); alerts arrive
   once the spending block is indexed.
+- Retracking: `DELETE /api/cases/{id}/txs/{txid}` drops the case's whole
+  watched-outputs tree (it has no seed lineage) and resets the remaining case
+  txs to unseeded; re-adding a txhash then makes the ETL re-seed, re-walk, and
+  re-fire alerts (seed/spend/cex) to the case's channels.
 - Full-chain indexing from an old `--start-block` is heavy (billions of rows for
   whole-chain scans) — pick a start block near your case dates for reasonable
   footprint, and give Postgres real resources.
