@@ -84,14 +84,6 @@ var migrateStmts = []string{
 			seeded BOOLEAN NOT NULL DEFAULT FALSE,
 			PRIMARY KEY (case_id, txid)
 		)`,
-	`CREATE TABLE IF NOT EXISTS case_channels (
-			id BIGSERIAL PRIMARY KEY,
-			case_id BIGINT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
-			name TEXT NOT NULL DEFAULT '',
-			type TEXT NOT NULL,
-			config JSONB NOT NULL,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-		)`,
 	`CREATE TABLE IF NOT EXISTS watched_outputs (
 			case_id BIGINT NOT NULL,
 			txid TEXT NOT NULL,
@@ -134,12 +126,38 @@ var migrateStmts = []string{
 	`ALTER TABLE sync_state ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now()`,
 	`ALTER TABLE sync_state ADD COLUMN IF NOT EXISTS pruned_min_sats BIGINT NOT NULL DEFAULT 0`,
 	`INSERT INTO sync_state (id) VALUES (1) ON CONFLICT DO NOTHING`,
-	`ALTER TABLE case_channels ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT ''`,
-	`UPDATE case_channels SET name = type || '-' || id WHERE name = ''`,
-	`CREATE UNIQUE INDEX IF NOT EXISTS uq_case_channels_case_name ON case_channels (case_id, name)`,
 	`ALTER TABLE cases ADD COLUMN IF NOT EXISTS backfill_checkpoint BIGINT NOT NULL DEFAULT 0`,
 	`ALTER TABLE cases ADD COLUMN IF NOT EXISTS backfill_target BIGINT NOT NULL DEFAULT 0`,
 	`ALTER TABLE addresses ADD COLUMN IF NOT EXISTS is_terminal BOOLEAN NOT NULL DEFAULT FALSE`,
 	`ALTER TABLE addresses ADD COLUMN IF NOT EXISTS terminal_kind TEXT NOT NULL DEFAULT ''`,
 	`UPDATE addresses SET is_terminal = TRUE, terminal_kind = 'cex' WHERE is_cex AND NOT is_terminal`,
+	`CREATE TABLE IF NOT EXISTS channels (
+			id BIGSERIAL PRIMARY KEY,
+			name TEXT NOT NULL,
+			type TEXT NOT NULL,
+			config JSONB NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS uq_channels_name ON channels (name)`,
+	`CREATE TABLE IF NOT EXISTS case_channel_subs (
+			case_id BIGINT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+			channel_id BIGINT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+			PRIMARY KEY (case_id, channel_id)
+		)`,
+	// One-shot migration: fold the old per-case case_channels rows into the
+	// global channels table and preserve each case's subscriptions.
+	`DO $$
+	 BEGIN
+	   IF EXISTS (SELECT 1 FROM information_schema.columns
+	              WHERE table_name = 'case_channels' AND column_name = 'type') THEN
+	     INSERT INTO channels (name, type, config)
+	     SELECT DISTINCT ON (name) name, type, config FROM case_channels ORDER BY name, id
+	     ON CONFLICT (name) DO NOTHING;
+	     INSERT INTO case_channel_subs (case_id, channel_id)
+	     SELECT DISTINCT cc.case_id, ch.id FROM case_channels cc
+	     JOIN channels ch ON ch.name = cc.name AND ch.type = cc.type
+	     ON CONFLICT DO NOTHING;
+	     DROP TABLE case_channels;
+	   END IF;
+	 END $$`,
 }

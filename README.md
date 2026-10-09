@@ -5,9 +5,9 @@ follow every movement of their outputs (above a minimum threshold, e.g. 0.1 BTC)
 block by block over bitcoind's JSON-RPC until each path terminates at a terminal
 entity — an exchange (CEX), mixer, gambling/darknet/service address (via the
 BlockSec address-label API or manual pinning), or a mixer-shaped spender tx
-(coinjoin denominations). Alerts fan out to Slack / Telegram / Lark channels
-configured per case in the web dashboard, which also draws the fund-flow graph
-from the local Postgres index.
+(coinjoin denominations). Alerts fan out to Slack / Telegram / Lark channels —
+configured once globally and picked per case — via the web dashboard, which
+also draws the fund-flow graph from the local Postgres index.
 
 ## Architecture
 
@@ -25,12 +25,12 @@ bitracer etl      full-chain indexer + case walker (no external calls)
    |
    v
 Postgres          txs, tx_outputs, tx_inputs (chain index)
-                  cases, case_txs, case_channels, watched_outputs,
-                  addresses (label cache), alerts, sync_state
+                  cases, case_txs, channels, case_channel_subs,
+                  watched_outputs, addresses (label cache), alerts, sync_state
    |
    v
 bitracer serve    REST API + dashboard + labeler worker (investigate phase)
-  - cases CRUD, txhashes per case, notify channels per case
+  - cases CRUD, txhashes per case, global notify channels + per-case subscriptions
   - labeler: resolves addresses via pluggable vendors (BlockSec, ...),
     caches results, flips watched outputs to terminal on terminal-entity hits
     (exchange, mixer, gambling, darknet, service)
@@ -44,10 +44,11 @@ Vendor lookups happen only in the investigate phase (serve-side labeler loop +
 `GET /api/label?address=` + `POST /api/cases/{id}/resolve-labels`), never in
 the ETL.
 
-A **case** = one investigation: one or more source txhashes, a minimum-BTC
-threshold (falls back to the daemon's `--minimum-btc`), and any number of
-notification channels (slack webhook / telegram bot token+chat / lark webhook)
-configured from the dashboard. All state is in Postgres, so both processes
+A **case** = one investigation: one or more source txhashes and a minimum-BTC
+threshold (falls back to the daemon's `--minimum-btc`). Notification channels
+(slack webhook / telegram bot token+chat / lark webhook) are global config —
+managed once from the dashboard's channels panel — and each case picks which of
+them receive its alerts. All state is in Postgres, so both processes
 restart-free and the ETL resumes from `sync_state.last_height`.
 
 ## Requirements
@@ -123,9 +124,10 @@ Entries with a `kind` are terminal stops; `"kind": ""` is attribution only.
 
 ### Dashboard
 
-- create a **case** (name, optional min BTC)
+- create a **case** (name, optional min BTC) and pick which notify channels it uses
 - add/remove **txhashes** — the ETL seeds each source tx and starts walking
-- add **channels** (slack / telegram / lark) — alerts for that case go there
+- **channels** panel (header): manage the global notify channels
+  (slack / telegram / lark) — cases subscribe to these
 - **graph** tab: enter any txhash to draw the fund flow (also works for txs not
   tracked, if bitcoind has them); red nodes = labeled entities (CEX)
 - **alerts** tab: live feed (polls every 15s)
@@ -134,13 +136,14 @@ Entries with a `kind` are terminal stops; `"kind": ""` is attribution only.
 
 ```
 GET    /api/health
-GET    /api/cases                  POST /api/cases {name, min_btc?, depth_cap?, branch_cap?}
+GET    /api/cases                  POST /api/cases {name, min_btc?, depth_cap?, branch_cap?, channel_ids?}
 GET    /api/cases/{id}             PATCH /api/cases/{id} {status: active|paused}
-DELETE /api/cases/{id}             (cascades txs/channels/watched/alerts)
+DELETE /api/cases/{id}             (cascades txs/subs/watched/alerts)
 GET    /api/cases/{id}/txs         POST /api/cases/{id}/txs {txid}
 DELETE /api/cases/{id}/txs/{txid}
-GET    /api/cases/{id}/channels    POST /api/cases/{id}/channels {type, config}
-DELETE /api/channels/{id}
+GET    /api/channels               POST /api/channels {name, type, config}
+DELETE /api/channels/{id}          POST /api/channels/test {type, config}
+GET    /api/cases/{id}/channels    PUT /api/cases/{id}/channels {channel_ids: []}
 GET    /api/alerts?case_id=&limit=
 GET    /api/graph?txid=&depth=
 GET    /api/label?address=
@@ -182,7 +185,7 @@ lark `{"webhook": "https://open.larksuite.com/open-apis/bot/v2/hook/..."}`.
 - Retracking: `DELETE /api/cases/{id}/txs/{txid}` drops the case's whole
   watched-outputs tree (it has no seed lineage) and resets the remaining case
   txs to unseeded; re-adding a txhash then makes the ETL re-seed, re-walk, and
-  re-fire alerts (seed/spend/cex) to the case's channels.
+  re-fire alerts (seed/spend/cex) to the case's subscribed channels.
 - Full-chain indexing from an old `--start-block` is heavy (billions of rows for
   whole-chain scans) — pick a start block near your case dates for reasonable
   footprint, and give Postgres real resources.

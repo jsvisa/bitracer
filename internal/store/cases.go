@@ -2,12 +2,10 @@ package store
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type Case struct {
@@ -28,14 +26,6 @@ type CaseTx struct {
 	CaseID int64  `json:"case_id"`
 	Txid   string `json:"txid"`
 	Seeded bool   `json:"seeded"`
-}
-
-type Channel struct {
-	ID     int64           `json:"id"`
-	CaseID int64           `json:"case_id"`
-	Name   string          `json:"name"`
-	Type   string          `json:"type"`
-	Config json.RawMessage `json:"config"`
 }
 
 var ErrDuplicate = errors.New("already exists")
@@ -188,44 +178,6 @@ func (s *Store) PendingCaseSeeds(ctx context.Context) ([]CaseSeed, error) {
 
 func (s *Store) SetCaseTxSeeded(ctx context.Context, caseID int64, txid string) error {
 	_, err := s.pool.Exec(ctx, `UPDATE case_txs SET seeded = TRUE WHERE case_id = $1 AND txid = $2`, caseID, txid)
-	return err
-}
-
-func (s *Store) AddChannel(ctx context.Context, caseID int64, name, typ string, cfg json.RawMessage) (Channel, error) {
-	var ch Channel
-	err := s.pool.QueryRow(ctx,
-		`INSERT INTO case_channels (case_id, name, type, config) VALUES ($1, $2, $3, $4)
-		 RETURNING id, case_id, name, type, config`, caseID, name, typ, cfg).
-		Scan(&ch.ID, &ch.CaseID, &ch.Name, &ch.Type, &ch.Config)
-	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			return ch, ErrDuplicate
-		}
-	}
-	return ch, err
-}
-
-func (s *Store) ListChannels(ctx context.Context, caseID int64) ([]Channel, error) {
-	rows, err := s.pool.Query(ctx,
-		`SELECT id, case_id, name, type, config FROM case_channels WHERE case_id = $1 ORDER BY id`, caseID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []Channel
-	for rows.Next() {
-		var ch Channel
-		if err := rows.Scan(&ch.ID, &ch.CaseID, &ch.Name, &ch.Type, &ch.Config); err != nil {
-			return nil, err
-		}
-		out = append(out, ch)
-	}
-	return out, rows.Err()
-}
-
-func (s *Store) DeleteChannel(ctx context.Context, id int64) error {
-	_, err := s.pool.Exec(ctx, `DELETE FROM case_channels WHERE id = $1`, id)
 	return err
 }
 
