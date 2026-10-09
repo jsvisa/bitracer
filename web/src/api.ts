@@ -20,13 +20,6 @@ export interface CaseTx {
 
 export interface Channel {
   id: number
-  case_id: number
-  name: string
-  type: string
-  config: Record<string, string>
-}
-
-export interface ChannelInput {
   name: string
   type: string
   config: Record<string, string>
@@ -93,10 +86,10 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   listCases: () => req<Case[]>('/api/cases'),
-  createCase: (name: string, minBTC?: number, channel?: ChannelInput) =>
+  createCase: (name: string, minBTC?: number, channelIDs: number[] = []) =>
     req<Case>('/api/cases', {
       method: 'POST',
-      body: JSON.stringify({ name, min_btc: minBTC, channel }),
+      body: JSON.stringify({ name, min_btc: minBTC, channel_ids: channelIDs }),
     }),
   deleteCase: (id: number) => req<void>(`/api/cases/${id}`, { method: 'DELETE' }),
   setCaseStatus: (id: number, status: string) =>
@@ -108,12 +101,16 @@ export const api = {
   deleteCaseTx: (id: number, txid: string) =>
     req<void>(`/api/cases/${id}/txs/${txid}`, { method: 'DELETE' }),
 
-  listChannels: (id: number) => req<Channel[]>(`/api/cases/${id}/channels`),
-  addChannel: (id: number, name: string, type: string, config: Record<string, string>) =>
-    req<Channel>(`/api/cases/${id}/channels`, { method: 'POST', body: JSON.stringify({ name, type, config }) }),
+  listChannels: () => req<Channel[]>('/api/channels'),
+  createChannel: (name: string, type: string, config: Record<string, string>) =>
+    req<Channel>('/api/channels', { method: 'POST', body: JSON.stringify({ name, type, config }) }),
   testChannel: (type: string, config: Record<string, string>) =>
     req<void>('/api/channels/test', { method: 'POST', body: JSON.stringify({ type, config }) }),
   deleteChannel: (channelID: number) => req<void>(`/api/channels/${channelID}`, { method: 'DELETE' }),
+
+  listCaseChannels: (id: number) => req<Channel[]>(`/api/cases/${id}/channels`),
+  setCaseChannels: (id: number, channelIDs: number[]) =>
+    req<void>(`/api/cases/${id}/channels`, { method: 'PUT', body: JSON.stringify({ channel_ids: channelIDs }) }),
 
   listAlerts: (caseID?: number) =>
     req<Alert[]>(`/api/alerts?limit=200${caseID ? `&case_id=${caseID}` : ''}`),

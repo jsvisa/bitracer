@@ -9,7 +9,7 @@ import (
 )
 
 func NotifyCase(ctx context.Context, st *store.Store, caseID int64, msg notify.Message) {
-	chs, err := st.ListChannels(ctx, caseID)
+	chs, err := st.ListCaseChannels(ctx, caseID)
 	if err != nil {
 		slog.Error("load channels failed", "case", caseID, "err", err)
 		return

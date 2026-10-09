@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
-import { api, mempoolTx, type Alert, type Case, type CaseTx, type Channel, type ChannelInput, type GraphData, type SyncStatus } from './api'
+import { api, mempoolTx, type Alert, type Case, type CaseTx, type Channel, type GraphData, type SyncStatus } from './api'
 import { GraphView } from './GraphView'
 
 export function App() {
   const [cases, setCases] = useState<Case[]>([])
   const [selected, setSelected] = useState<number | null>(null)
+  const [showChannels, setShowChannels] = useState(false)
 
   const refreshCases = useCallback(async () => {
     setCases(await api.listCases())
@@ -25,7 +26,9 @@ export function App() {
         <h1>bitracer</h1>
         <span className="sub">stolen funds tracking</span>
         <SyncBadge />
+        <button onClick={() => setShowChannels(true)}>channels</button>
       </header>
+      {showChannels && <ChannelsManager onClose={() => setShowChannels(false)} />}
       <div className="layout">
         <aside>
           <NewCaseForm onCreated={(c) => { setCases([c, ...cases]); setSelected(c.id) }} />
@@ -151,27 +154,25 @@ function channelConfig(type: string, field1: string, field2: string): Record<str
 function NewCaseForm({ onCreated }: { onCreated: (c: Case) => void }) {
   const [name, setName] = useState('')
   const [minBTC, setMinBTC] = useState('')
-  const [chType, setChType] = useState('none')
-  const [chName, setChName] = useState('')
-  const [chField1, setChField1] = useState('')
-  const [chField2, setChField2] = useState('')
+  const [channels, setChannels] = useState<Channel[]>([])
+  const [picked, setPicked] = useState<number[]>([])
   const [err, setErr] = useState('')
+
+  useEffect(() => {
+    api.listChannels().then(setChannels).catch(() => {})
+  }, [])
+
+  const toggle = (id: number) =>
+    setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]))
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
     setErr('')
-    let channel: ChannelInput | undefined
-    if (chType !== 'none') {
-      channel = { name: chName.trim(), type: chType, config: channelConfig(chType, chField1, chField2) }
-    }
     try {
-      const c = await api.createCase(name, minBTC ? parseFloat(minBTC) : undefined, channel)
+      const c = await api.createCase(name, minBTC ? parseFloat(minBTC) : undefined, picked)
       setName('')
       setMinBTC('')
-      setChType('none')
-      setChName('')
-      setChField1('')
-      setChField2('')
+      setPicked([])
       onCreated(c)
     } catch (e) {
       setErr(String(e))
@@ -183,44 +184,19 @@ function NewCaseForm({ onCreated }: { onCreated: (c: Case) => void }) {
       <h3>new case</h3>
       <input placeholder="case name" value={name} onChange={(e) => setName(e.target.value)} required />
       <input placeholder="min BTC (default 0.1)" value={minBTC} onChange={(e) => setMinBTC(e.target.value)} />
-      <select
-        value={chType}
-        onChange={(e) => {
-          setChType(e.target.value)
-          setChName('')
-          setChField1('')
-          setChField2('')
-        }}
-      >
-        <option value="none">no notify channel</option>
-        <option value="slack">slack</option>
-        <option value="telegram">telegram</option>
-        <option value="lark">lark</option>
-      </select>
-      {chType !== 'none' && (
-        <>
-          <input
-            placeholder="channel name (unique in case)"
-            value={chName}
-            onChange={(e) => setChName(e.target.value)}
-            required
-          />
-          <input
-            placeholder={channelLabels[chType][0]}
-            value={chField1}
-            onChange={(e) => setChField1(e.target.value)}
-            required
-          />
-          {channelLabels[chType][1] && (
-            <input
-              placeholder={channelLabels[chType][1]}
-              value={chField2}
-              onChange={(e) => setChField2(e.target.value)}
-              required={field2Required(chType)}
-            />
-          )}
-        </>
-      )}
+      <div className="pick-list">
+        {channels.length === 0 ? (
+          <p className="empty">no notify channels yet — add one from the channels panel</p>
+        ) : (
+          channels.map((ch) => (
+            <label key={ch.id} className="pick-row">
+              <input type="checkbox" checked={picked.includes(ch.id)} onChange={() => toggle(ch.id)} />
+              <span className="pick-name">{ch.name}</span>
+              <span className="badge">{ch.type}</span>
+            </label>
+          ))
+        )}
+      </div>
       {err && <p className="err">{err}</p>}
       <button type="submit">create case</button>
     </form>
@@ -236,7 +212,7 @@ function CaseDetail({ id, minSats, onChanged }: { id: number; minSats: number | 
   const [alerts, setAlerts] = useState<Alert[]>([])
 
   const refresh = useCallback(async () => {
-    const [t, c] = await Promise.all([api.listCaseTxs(id), api.listChannels(id)])
+    const [t, c] = await Promise.all([api.listCaseTxs(id), api.listCaseChannels(id)])
     setTxs(t)
     setChannels(c)
   }, [id])
@@ -274,7 +250,7 @@ function CaseDetail({ id, minSats, onChanged }: { id: number; minSats: number | 
         </button>
       </div>
       {tab === 'txs' && <TxsTab caseId={id} txs={txs} onChanged={refresh} />}
-      {tab === 'channels' && <ChannelsTab caseId={id} channels={channels} onChanged={refresh} />}
+      {tab === 'channels' && <ChannelsTab caseId={id} subscribed={channels} onChanged={refresh} />}
       {tab === 'graph' && <GraphTab caseId={id} txs={txs} minSats={minSats} />}
       {tab === 'alerts' && <AlertsTab alerts={alerts} />}
     </div>
@@ -350,7 +326,140 @@ function TxsTab({ caseId, txs, onChanged }: { caseId: number; txs: CaseTx[]; onC
   )
 }
 
-function ChannelsTab({ caseId, channels, onChanged }: { caseId: number; channels: Channel[]; onChanged: () => void }) {
+function ChannelsTab({ caseId, subscribed, onChanged }: { caseId: number; subscribed: Channel[]; onChanged: () => void }) {
+  const [all, setAll] = useState<Channel[]>([])
+  const [err, setErr] = useState('')
+
+  useEffect(() => {
+    api.listChannels().then(setAll).catch((e) => setErr(String(e)))
+  }, [])
+
+  const toggle = async (ch: Channel) => {
+    setErr('')
+    const ids = subscribed.some((c) => c.id === ch.id)
+      ? subscribed.filter((c) => c.id !== ch.id).map((c) => c.id)
+      : [...subscribed.map((c) => c.id), ch.id]
+    try {
+      await api.setCaseChannels(caseId, ids)
+      onChanged()
+    } catch (e) {
+      setErr(String(e))
+    }
+  }
+
+  return (
+    <div>
+      <p className="sub">pick which global notify channels receive this case's alerts — manage channels from the header panel</p>
+      {err && <p className="err">{err}</p>}
+      <table>
+        <thead>
+          <tr>
+            <th>subscribed</th>
+            <th>name</th>
+            <th>type</th>
+            <th>config</th>
+          </tr>
+        </thead>
+        <tbody>
+          {all.map((c) => (
+            <tr key={c.id} className={subscribed.some((s) => s.id === c.id) ? 'subbed' : ''}>
+              <td>
+                <input
+                  type="checkbox"
+                  checked={subscribed.some((s) => s.id === c.id)}
+                  onChange={() => toggle(c)}
+                />
+              </td>
+              <td>{c.name}</td>
+              <td>{c.type}</td>
+              <td className="mono">
+                {Object.entries(c.config)
+                  .map(([k, v]) => `${k}=${v.length > 24 ? v.slice(0, 24) + '…' : v}`)
+                  .join(' ')}
+              </td>
+            </tr>
+          ))}
+          {all.length === 0 && (
+            <tr>
+              <td colSpan={4} className="empty">no channels configured — add one from the channels panel in the header</td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function ChannelsManager({ onClose }: { onClose: () => void }) {
+  const [channels, setChannels] = useState<Channel[]>([])
+  const [err, setErr] = useState('')
+
+  const load = useCallback(() => api.listChannels().then(setChannels), [])
+
+  useEffect(() => {
+    load().catch((e) => setErr(String(e)))
+  }, [load])
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="gd-head">
+          <span>notify channels — global config</span>
+          <button onClick={onClose}>close</button>
+        </div>
+        <ChannelForm onCreated={load} />
+        {err && <p className="err">{err}</p>}
+        <table>
+          <thead>
+            <tr>
+              <th>name</th>
+              <th>type</th>
+              <th>config</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {channels.map((c) => (
+              <tr key={c.id}>
+                <td>{c.name}</td>
+                <td>{c.type}</td>
+                <td className="mono">
+                  {Object.entries(c.config)
+                    .map(([k, v]) => `${k}=${v.length > 24 ? v.slice(0, 24) + '…' : v}`)
+                    .join(' ')}
+                </td>
+                <td>
+                  <button
+                    className="danger"
+                    onClick={async () => {
+                      if (!confirm(`delete channel "${c.name}"? cases subscribed to it will stop notifying`)) return
+                      setErr('')
+                      try {
+                        await api.deleteChannel(c.id)
+                        await load()
+                      } catch (e) {
+                        setErr(String(e))
+                      }
+                    }}
+                  >
+                    remove
+                  </button>
+                </td>
+              </tr>
+            ))}
+            {channels.length === 0 && (
+              <tr>
+                <td colSpan={4} className="empty">no channels configured</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+function ChannelForm({ onCreated }: { onCreated: () => void }) {
   const [type, setType] = useState('slack')
   const [name, setName] = useState('')
   const [field1, setField1] = useState('')
@@ -369,9 +478,9 @@ function ChannelsTab({ caseId, channels, onChanged }: { caseId: number; channels
     e.preventDefault()
     setErr('')
     try {
-      await api.addChannel(caseId, name.trim(), type, channelConfig(type, field1, field2))
+      await api.createChannel(name.trim(), type, channelConfig(type, field1, field2))
       resetFields()
-      onChanged()
+      onCreated()
     } catch (e) {
       setErr(String(e))
     }
@@ -395,70 +504,29 @@ function ChannelsTab({ caseId, channels, onChanged }: { caseId: number; channels
   }
 
   return (
-    <div>
-      <form onSubmit={submit} className="row wrap">
-        <select value={type} onChange={(e) => { setType(e.target.value); resetFields() }}>
-          <option value="slack">slack</option>
-          <option value="telegram">telegram</option>
-          <option value="lark">lark</option>
-        </select>
-        <input placeholder="channel name (unique in case)" value={name} onChange={(e) => setName(e.target.value)} required />
-        <input placeholder={channelLabels[type][0]} value={field1} onChange={(e) => setField1(e.target.value)} required />
-        {channelLabels[type][1] && (
-          <input
-            placeholder={channelLabels[type][1]}
-            value={field2}
-            onChange={(e) => setField2(e.target.value)}
-            required={field2Required(type)}
-          />
-        )}
-        <button type="button" onClick={test} disabled={testState === 'sending'}>
-          {testState === 'sending' ? 'testing…' : 'test'}
-        </button>
-        <button type="submit">add channel</button>
-      </form>
+    <form onSubmit={submit} className="row wrap">
+      <select value={type} onChange={(e) => { setType(e.target.value); resetFields() }}>
+        <option value="slack">slack</option>
+        <option value="telegram">telegram</option>
+        <option value="lark">lark</option>
+      </select>
+      <input placeholder="channel name (unique)" value={name} onChange={(e) => setName(e.target.value)} required />
+      <input placeholder={channelLabels[type][0]} value={field1} onChange={(e) => setField1(e.target.value)} required />
+      {channelLabels[type][1] && (
+        <input
+          placeholder={channelLabels[type][1]}
+          value={field2}
+          onChange={(e) => setField2(e.target.value)}
+          required={field2Required(type)}
+        />
+      )}
+      <button type="button" onClick={test} disabled={testState === 'sending'}>
+        {testState === 'sending' ? 'testing…' : 'test'}
+      </button>
+      <button type="submit">add channel</button>
       {testState === 'ok' && <p className="ok">test message sent — check the channel</p>}
       {err && <p className="err">{err}</p>}
-      <table>
-        <thead>
-          <tr>
-            <th>name</th>
-            <th>type</th>
-            <th>config</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          {channels.map((c) => (
-            <tr key={c.id}>
-              <td>{c.name}</td>
-              <td>{c.type}</td>
-              <td className="mono">
-                {Object.entries(c.config)
-                  .map(([k, v]) => `${k}=${v.length > 24 ? v.slice(0, 24) + '…' : v}`)
-                  .join(' ')}
-              </td>
-              <td>
-                <button
-                  className="danger"
-                  onClick={async () => {
-                    await api.deleteChannel(c.id)
-                    onChanged()
-                  }}
-                >
-                  remove
-                </button>
-              </td>
-            </tr>
-          ))}
-          {channels.length === 0 && (
-            <tr>
-              <td colSpan={4} className="empty">no channels configured</td>
-            </tr>
-          )}
-        </tbody>
-      </table>
-    </div>
+    </form>
   )
 }
 

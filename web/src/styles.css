@@ -436,3 +436,54 @@ a:hover {
 .graph-zoom button:hover {
   background: #3d4148;
 }
+
+input[type='checkbox'] {
+  padding: 0;
+  width: 14px;
+  height: 14px;
+  accent-color: #5b8def;
+}
+
+.pick-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pick-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.pick-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+}
+
+.modal {
+  background: #3b4252;
+  border-radius: 10px;
+  padding: 16px;
+  width: 720px;
+  max-width: calc(100% - 32px);
+  max-height: 80vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}

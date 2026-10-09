@@ -36,10 +36,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/cases/{id}/txs", s.listCaseTxs)
 	mux.HandleFunc("POST /api/cases/{id}/txs", s.addCaseTx)
 	mux.HandleFunc("DELETE /api/cases/{id}/txs/{txid}", s.deleteCaseTx)
-	mux.HandleFunc("GET /api/cases/{id}/channels", s.listChannels)
-	mux.HandleFunc("POST /api/cases/{id}/channels", s.addChannel)
+	mux.HandleFunc("GET /api/channels", s.listChannels)
+	mux.HandleFunc("POST /api/channels", s.addChannel)
 	mux.HandleFunc("POST /api/channels/test", s.testChannel)
 	mux.HandleFunc("DELETE /api/channels/{id}", s.deleteChannel)
+	mux.HandleFunc("GET /api/cases/{id}/channels", s.listCaseChannels)
+	mux.HandleFunc("PUT /api/cases/{id}/channels", s.setCaseChannels)
 	mux.HandleFunc("GET /api/alerts", s.listAlerts)
 	mux.HandleFunc("GET /api/sync", s.syncStatus)
 	mux.HandleFunc("GET /api/graph", s.graph)
@@ -71,12 +73,12 @@ type channelBody struct {
 }
 
 type caseBody struct {
-	Name      string       `json:"name"`
-	Status    string       `json:"status"`
-	MinBTC    *float64     `json:"min_btc"`
-	DepthCap  *int32       `json:"depth_cap"`
-	BranchCap *int32       `json:"branch_cap"`
-	Channel   *channelBody `json:"channel"`
+	Name       string   `json:"name"`
+	Status     string   `json:"status"`
+	MinBTC     *float64 `json:"min_btc"`
+	DepthCap   *int32   `json:"depth_cap"`
+	BranchCap  *int32   `json:"branch_cap"`
+	ChannelIDs []int64  `json:"channel_ids"`
 }
 
 func (ch *channelBody) validate() error {
@@ -96,17 +98,11 @@ func (s *Server) createCase(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("name required"))
 		return
 	}
-	var ch *channelBody
-	if b.Channel != nil && strings.TrimSpace(b.Channel.Type) != "" {
-		if err := b.Channel.validate(); err != nil {
-			writeErr(w, http.StatusBadRequest, err)
+	if len(b.ChannelIDs) > 0 {
+		if err := s.st.ValidateChannelIDs(r.Context(), b.ChannelIDs); err != nil {
+			writeErr(w, http.StatusBadRequest, errors.New("unknown channel id in channel_ids"))
 			return
 		}
-		if _, err := validateChannel(b.Channel.Type, b.Channel.Config); err != nil {
-			writeErr(w, http.StatusBadRequest, err)
-			return
-		}
-		ch = b.Channel
 	}
 	var minSats *int64
 	if b.MinBTC != nil && *b.MinBTC > 0 {
@@ -125,8 +121,8 @@ func (s *Server) createCase(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	if ch != nil {
-		if _, err := s.st.AddChannel(r.Context(), c.ID, strings.TrimSpace(ch.Name), ch.Type, ch.Config); err != nil {
+	if len(b.ChannelIDs) > 0 {
+		if err := s.st.SetCaseChannels(r.Context(), c.ID, b.ChannelIDs); err != nil {
 			writeErr(w, http.StatusInternalServerError, err)
 			return
 		}
@@ -290,12 +286,7 @@ func (s *Server) deleteCaseTx(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listChannels(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, err)
-		return
-	}
-	chs, err := s.st.ListChannels(r.Context(), id)
+	chs, err := s.st.ListChannels(r.Context())
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
@@ -307,11 +298,6 @@ func (s *Server) listChannels(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) addChannel(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, err)
-		return
-	}
 	var b channelBody
 	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
@@ -325,10 +311,10 @@ func (s *Server) addChannel(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	ch, err := s.st.AddChannel(r.Context(), id, strings.TrimSpace(b.Name), b.Type, b.Config)
+	ch, err := s.st.CreateChannel(r.Context(), strings.TrimSpace(b.Name), b.Type, b.Config)
 	if err != nil {
 		if errors.Is(err, store.ErrDuplicate) {
-			writeErr(w, http.StatusConflict, errors.New("a channel with this name already exists in the case"))
+			writeErr(w, http.StatusConflict, errors.New("a channel with this name already exists"))
 			return
 		}
 		writeErr(w, http.StatusInternalServerError, err)
@@ -366,6 +352,47 @@ func (s *Server) deleteChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"deleted": strconv.FormatInt(id, 10)})
+}
+
+func (s *Server) listCaseChannels(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	chs, err := s.st.ListCaseChannels(r.Context(), id)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if chs == nil {
+		chs = []store.Channel{}
+	}
+	writeJSON(w, http.StatusOK, chs)
+}
+
+func (s *Server) setCaseChannels(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	var b struct {
+		ChannelIDs []int64 `json:"channel_ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.st.SetCaseChannels(r.Context(), id, b.ChannelIDs); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeErr(w, http.StatusBadRequest, errors.New("unknown channel id in channel_ids"))
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"updated": strconv.FormatInt(id, 10)})
 }
 
 func (s *Server) listAlerts(w http.ResponseWriter, r *http.Request) {
