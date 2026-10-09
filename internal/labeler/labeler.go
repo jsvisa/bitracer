@@ -132,39 +132,64 @@ func (s *Service) markTerminal(ctx context.Context, addr string, lbl *labels.Lab
 	if kind == "" {
 		kind = "cex"
 	}
-	rows, err := s.st.WatchingByAddress(ctx, addr)
+	entity := lbl.Name
+	if entity == "" {
+		entity = kind
+	}
+	FlipAddressTerminal(ctx, s.st, addr, kind, entity)
+}
+
+// FlipAddressTerminal stops every case still watching outputs at addr and
+// emits one aggregated alert per case. Shared by vendor-label hits, manual
+// pins and the heuristic stops.
+func FlipAddressTerminal(ctx context.Context, st *store.Store, addr, kind, entity string) {
+	rows, err := st.WatchingByAddress(ctx, addr)
 	if err != nil {
 		slog.Error("watching lookup failed", "address", addr, "err", err)
 		return
 	}
+	byCase := map[int64][]store.WatchedRow{}
 	for _, r := range rows {
-		flipped, err := s.st.SetWatchedTerminal(ctx, r.CaseID, r.Txid, r.Vout)
-		if err != nil {
-			slog.Error("terminal flip failed", "case", r.CaseID, "err", err)
-			continue
+		byCase[r.CaseID] = append(byCase[r.CaseID], r)
+	}
+	for caseID, rs := range byCase {
+		var sum int64
+		var depth int32
+		txid := rs[0].Txid
+		flipped := 0
+		for _, r := range rs {
+			ok, err := st.SetWatchedTerminal(ctx, caseID, r.Txid, r.Vout)
+			if err != nil {
+				slog.Error("terminal flip failed", "case", caseID, "err", err)
+				continue
+			}
+			if !ok {
+				continue
+			}
+			flipped++
+			sum += r.ValueSats
+			if r.Depth > depth {
+				depth = r.Depth
+			}
 		}
-		if !flipped {
+		if flipped == 0 {
 			continue
-		}
-		entity := lbl.Name
-		if entity == "" {
-			entity = kind
 		}
 		msg := notify.Message{
 			Kind:      kind,
-			CaseID:    r.CaseID,
-			Headline:  fmt.Sprintf("%.8f BTC reached %s — STOP", btc.SatsToBTC(r.ValueSats), entity),
+			CaseID:    caseID,
+			Headline:  fmt.Sprintf("%.8f BTC reached %s — STOP", btc.SatsToBTC(sum), entity),
 			Entity:    entity,
-			Txid:      r.Txid,
+			Txid:      txid,
 			Address:   addr,
-			ValueSats: r.ValueSats,
-			Depth:     r.Depth,
+			ValueSats: sum,
+			Depth:     depth,
 		}
-		if err := alerts.Emit(ctx, s.st, store.Alert{
-			CaseID: r.CaseID, Txid: r.Txid, Address: addr,
-			ValueSats: r.ValueSats, Depth: r.Depth, Kind: kind,
+		if err := alerts.Emit(ctx, st, store.Alert{
+			CaseID: caseID, Txid: txid, Address: addr,
+			ValueSats: sum, Depth: depth, Kind: kind,
 		}, msg); err != nil {
-			slog.Error("terminal alert failed", "case", r.CaseID, "err", err)
+			slog.Error("terminal alert failed", "case", caseID, "err", err)
 		}
 	}
 }
