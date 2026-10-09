@@ -121,7 +121,9 @@ GET    /api/alerts?case_id=&limit=
 GET    /api/graph?txid=&depth=
 ```
 
-Channel configs: slack `{"webhook": "https://hooks.slack.com/..."}`,
+Channel configs: slack `{"webhook": "https://hooks.slack.com/...", "channel":
+"#alerts"}` (`channel` is optional; overrides the webhook's bound channel on
+legacy incoming webhooks),
 telegram `{"token": "...", "chat_id": "..."}`
 lark `{"webhook": "https://open.larksuite.com/open-apis/bot/v2/hook/..."}`.
 

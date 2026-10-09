@@ -95,15 +95,23 @@ function ago(ts: number): string {
 }
 
 const channelLabels: Record<string, [string, string]> = {
-  slack: ['webhook url', ''],
+  slack: ['webhook url', 'channel name (optional)'],
   telegram: ['bot token', 'chat id'],
   lark: ['webhook url', ''],
 }
 
-function channelConfig(type: string, field1: string, field2: string): Record<string, string> {
+function field2Required(type: string): boolean {
   return type === 'telegram'
-    ? { token: field1.trim(), chat_id: field2.trim() }
-    : { webhook: field1.trim() }
+}
+
+function channelConfig(type: string, field1: string, field2: string): Record<string, string> {
+  if (type === 'telegram') return { token: field1.trim(), chat_id: field2.trim() }
+  if (type === 'slack') {
+    const cfg: Record<string, string> = { webhook: field1.trim() }
+    if (field2.trim()) cfg.channel = field2.trim()
+    return cfg
+  }
+  return { webhook: field1.trim() }
 }
 
 function NewCaseForm({ onCreated }: { onCreated: (c: Case) => void }) {
@@ -174,7 +182,7 @@ function NewCaseForm({ onCreated }: { onCreated: (c: Case) => void }) {
               placeholder={channelLabels[chType][1]}
               value={chField2}
               onChange={(e) => setChField2(e.target.value)}
-              required
+              required={field2Required(chType)}
             />
           )}
         </>
@@ -337,7 +345,7 @@ function ChannelsTab({ caseId, channels, onChanged }: { caseId: number; channels
 
   const test = async () => {
     setErr('')
-    if (!field1.trim() || (channelLabels[type][1] && !field2.trim())) {
+    if (!field1.trim() || (field2Required(type) && !field2.trim())) {
       setTestState('fail')
       setErr('fill in the channel fields before testing')
       return
@@ -363,7 +371,12 @@ function ChannelsTab({ caseId, channels, onChanged }: { caseId: number; channels
         <input placeholder="channel name (unique in case)" value={name} onChange={(e) => setName(e.target.value)} required />
         <input placeholder={channelLabels[type][0]} value={field1} onChange={(e) => setField1(e.target.value)} required />
         {channelLabels[type][1] && (
-          <input placeholder={channelLabels[type][1]} value={field2} onChange={(e) => setField2(e.target.value)} required />
+          <input
+            placeholder={channelLabels[type][1]}
+            value={field2}
+            onChange={(e) => setField2(e.target.value)}
+            required={field2Required(type)}
+          />
         )}
         <button type="button" onClick={test} disabled={testState === 'sending'}>
           {testState === 'sending' ? 'testing…' : 'test'}
