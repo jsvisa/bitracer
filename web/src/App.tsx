@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { api, type Alert, type Case, type CaseTx, type Channel, type ChannelInput, type GraphData } from './api'
+import { api, mempoolTx, type Alert, type Case, type CaseTx, type Channel, type ChannelInput, type GraphData } from './api'
 import { GraphView } from './GraphView'
 
 export function App() {
@@ -54,10 +54,17 @@ const channelLabels: Record<string, [string, string]> = {
   lark: ['webhook url', ''],
 }
 
+function channelConfig(type: string, field1: string, field2: string): Record<string, string> {
+  return type === 'telegram'
+    ? { token: field1.trim(), chat_id: field2.trim() }
+    : { webhook: field1.trim() }
+}
+
 function NewCaseForm({ onCreated }: { onCreated: (c: Case) => void }) {
   const [name, setName] = useState('')
   const [minBTC, setMinBTC] = useState('')
   const [chType, setChType] = useState('none')
+  const [chName, setChName] = useState('')
   const [chField1, setChField1] = useState('')
   const [chField2, setChField2] = useState('')
   const [err, setErr] = useState('')
@@ -67,17 +74,14 @@ function NewCaseForm({ onCreated }: { onCreated: (c: Case) => void }) {
     setErr('')
     let channel: ChannelInput | undefined
     if (chType !== 'none') {
-      const config: Record<string, string> =
-        chType === 'telegram'
-          ? { token: chField1.trim(), chat_id: chField2.trim() }
-          : { webhook: chField1.trim() }
-      channel = { type: chType, config }
+      channel = { name: chName.trim(), type: chType, config: channelConfig(chType, chField1, chField2) }
     }
     try {
       const c = await api.createCase(name, minBTC ? parseFloat(minBTC) : undefined, channel)
       setName('')
       setMinBTC('')
       setChType('none')
+      setChName('')
       setChField1('')
       setChField2('')
       onCreated(c)
@@ -95,6 +99,7 @@ function NewCaseForm({ onCreated }: { onCreated: (c: Case) => void }) {
         value={chType}
         onChange={(e) => {
           setChType(e.target.value)
+          setChName('')
           setChField1('')
           setChField2('')
         }}
@@ -106,6 +111,12 @@ function NewCaseForm({ onCreated }: { onCreated: (c: Case) => void }) {
       </select>
       {chType !== 'none' && (
         <>
+          <input
+            placeholder="channel name (unique in case)"
+            value={chName}
+            onChange={(e) => setChName(e.target.value)}
+            required
+          />
           <input
             placeholder={channelLabels[chType][0]}
             value={chField1}
@@ -221,7 +232,11 @@ function TxsTab({ caseId, txs, onChanged }: { caseId: number; txs: CaseTx[]; onC
         <tbody>
           {txs.map((t) => (
             <tr key={t.txid}>
-              <td className="mono">{t.txid}</td>
+              <td className="mono">
+                <a href={mempoolTx(t.txid)} target="_blank" rel="noreferrer">
+                  {t.txid}
+                </a>
+              </td>
               <td>{t.seeded ? 'yes' : 'pending'}</td>
               <td>
                 <button
@@ -249,23 +264,44 @@ function TxsTab({ caseId, txs, onChanged }: { caseId: number; txs: CaseTx[]; onC
 
 function ChannelsTab({ caseId, channels, onChanged }: { caseId: number; channels: Channel[]; onChanged: () => void }) {
   const [type, setType] = useState('slack')
+  const [name, setName] = useState('')
   const [field1, setField1] = useState('')
   const [field2, setField2] = useState('')
   const [err, setErr] = useState('')
+  const [testState, setTestState] = useState<'idle' | 'sending' | 'ok' | 'fail'>('idle')
+
+  const resetFields = () => {
+    setName('')
+    setField1('')
+    setField2('')
+    setTestState('idle')
+  }
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
     setErr('')
-    const config: Record<string, string> =
-      type === 'telegram'
-        ? { token: field1, chat_id: field2 }
-        : { webhook: field1 }
     try {
-      await api.addChannel(caseId, type, config)
-      setField1('')
-      setField2('')
+      await api.addChannel(caseId, name.trim(), type, channelConfig(type, field1, field2))
+      resetFields()
       onChanged()
     } catch (e) {
+      setErr(String(e))
+    }
+  }
+
+  const test = async () => {
+    setErr('')
+    if (!field1.trim() || (channelLabels[type][1] && !field2.trim())) {
+      setTestState('fail')
+      setErr('fill in the channel fields before testing')
+      return
+    }
+    setTestState('sending')
+    try {
+      await api.testChannel(type, channelConfig(type, field1, field2))
+      setTestState('ok')
+    } catch (e) {
+      setTestState('fail')
       setErr(String(e))
     }
   }
@@ -273,21 +309,27 @@ function ChannelsTab({ caseId, channels, onChanged }: { caseId: number; channels
   return (
     <div>
       <form onSubmit={submit} className="row wrap">
-        <select value={type} onChange={(e) => { setType(e.target.value); setField1(''); setField2('') }}>
+        <select value={type} onChange={(e) => { setType(e.target.value); resetFields() }}>
           <option value="slack">slack</option>
           <option value="telegram">telegram</option>
           <option value="lark">lark</option>
         </select>
+        <input placeholder="channel name (unique in case)" value={name} onChange={(e) => setName(e.target.value)} required />
         <input placeholder={channelLabels[type][0]} value={field1} onChange={(e) => setField1(e.target.value)} required />
         {channelLabels[type][1] && (
           <input placeholder={channelLabels[type][1]} value={field2} onChange={(e) => setField2(e.target.value)} required />
         )}
+        <button type="button" onClick={test} disabled={testState === 'sending'}>
+          {testState === 'sending' ? 'testing…' : 'test'}
+        </button>
         <button type="submit">add channel</button>
       </form>
+      {testState === 'ok' && <p className="ok">test message sent — check the channel</p>}
       {err && <p className="err">{err}</p>}
       <table>
         <thead>
           <tr>
+            <th>name</th>
             <th>type</th>
             <th>config</th>
             <th></th>
@@ -296,6 +338,7 @@ function ChannelsTab({ caseId, channels, onChanged }: { caseId: number; channels
         <tbody>
           {channels.map((c) => (
             <tr key={c.id}>
+              <td>{c.name}</td>
               <td>{c.type}</td>
               <td className="mono">
                 {Object.entries(c.config)
@@ -317,7 +360,7 @@ function ChannelsTab({ caseId, channels, onChanged }: { caseId: number; channels
           ))}
           {channels.length === 0 && (
             <tr>
-              <td colSpan={3} className="empty">no channels configured</td>
+              <td colSpan={4} className="empty">no channels configured</td>
             </tr>
           )}
         </tbody>
@@ -396,6 +439,7 @@ function AlertsTab({ alerts }: { alerts: Alert[] }) {
           <th>time</th>
           <th>kind</th>
           <th>message</th>
+          <th>tx</th>
         </tr>
       </thead>
       <tbody>
@@ -406,11 +450,16 @@ function AlertsTab({ alerts }: { alerts: Alert[] }) {
               <span className={`badge ${a.kind === 'cex' ? 'cex' : a.kind}`}>{a.kind}</span>
             </td>
             <td>{a.message}</td>
+            <td className="mono">
+              <a href={mempoolTx(a.txid)} target="_blank" rel="noreferrer">
+                {a.txid.length > 14 ? a.txid.slice(0, 12) + '…' : a.txid}
+              </a>
+            </td>
           </tr>
         ))}
         {alerts.length === 0 && (
           <tr>
-            <td colSpan={3} className="empty">no alerts yet</td>
+            <td colSpan={4} className="empty">no alerts yet</td>
           </tr>
         )}
       </tbody>

@@ -8,7 +8,7 @@ import (
 	"github.com/jsvisa/bitracer/internal/store"
 )
 
-func NotifyCase(ctx context.Context, st *store.Store, caseID int64, msg string) {
+func NotifyCase(ctx context.Context, st *store.Store, caseID int64, msg notify.Message) {
 	chs, err := st.ListChannels(ctx, caseID)
 	if err != nil {
 		slog.Error("load channels failed", "case", caseID, "err", err)
@@ -26,7 +26,8 @@ func NotifyCase(ctx context.Context, st *store.Store, caseID int64, msg string) 
 	notify.SendAll(ctx, ns, msg)
 }
 
-func Emit(ctx context.Context, st *store.Store, a store.Alert, msg string) error {
+func Emit(ctx context.Context, st *store.Store, a store.Alert, msg notify.Message) error {
+	a.Message = msg.Plain()
 	if err := st.AddAlert(ctx, a); err != nil {
 		return err
 	}
