@@ -50,14 +50,26 @@ restart-free and the ETL resumes from `sync_state.last_height`.
 
 - bitcoind with `txindex=1`, RPC enabled
 - Postgres (14+)
-- Go 1.25+, Node 20+ / pnpm (only for building the dashboard)
+- Go 1.26+, Node 20+ / pnpm (only for building the dashboard)
 
 ## Build
 
 ```sh
+(cd web && pnpm install && pnpm build)   # produces web/dist, embedded via web/embed.go
 go build -o bitracer ./cmd/bitracer
-(cd web && pnpm install && pnpm build)   # produces web/dist
 ```
+
+The dashboard is embedded into the binary at build time (`go:embed all:dist`), so
+run the pnpm build **before** `go build`; without it the binary serves an empty
+dashboard. `serve` prefers the on-disk `BITRACER_WEB_DIR`/`--web-dir` when it has
+an `index.html`, and falls back to the embedded copy.
+
+## Docker
+
+`./build.sh` produces the image artifacts (cross-compiles `GOARCH=arm64` — change
+for amd64); the Dockerfile is network-free and just COPYs them. `docker compose up`
+runs the full stack (postgres + `bitracer run`); compose reads `.env` (see
+`.env.example`), which the Go binary itself does not load.
 
 ## Run
 
@@ -73,8 +85,8 @@ DATABASE_URL=postgres://... ./bitracer migrate
   --minimum-btc 0.1 \
   --db-url postgres://...
 
-# api + dashboard (serves web/dist, proxies /api)
-DATABASE_URL=postgres://... BLOCKSEC_API_URL=... BLOCKSEC_API_KEY=... ./bitracer serve
+# api + dashboard (REST API under /api, static dashboard)
+DATABASE_URL=postgres://... BLOCKSEC_LABEL_APIKEY=... ./bitracer serve
 
 # or both in one process
 ./bitracer run --start-block 870000 ...
@@ -82,8 +94,8 @@ DATABASE_URL=postgres://... BLOCKSEC_API_URL=... BLOCKSEC_API_KEY=... ./bitracer
 
 Environment: `DATABASE_URL`, `BTC_RPC_URL`, `BTC_RPC_USER`, `BTC_RPC_PASS`,
 `BLOCKSEC_LABEL_APIKEY`, `BLOCKSEC_LABEL_URL`, `BLOCKSEC_LABEL_CHAIN_ID`
-(`-1` = bitcoin), `BITRACER_LABEL_INTERVAL`, `BITRACER_LISTEN` (default `:8080`),
-`BITRACER_WEB_DIR` (default `web/dist`).
+(`-1` = bitcoin), `BITRACER_SYNC_INTERVAL` (default 15s), `BITRACER_LABEL_INTERVAL`
+(60s), `BITRACER_LISTEN` (default `:8080`), `BITRACER_WEB_DIR` (default `web/dist`).
 
 ### Dashboard
 
@@ -131,7 +143,7 @@ lark `{"webhook": "https://open.larksuite.com/open-apis/bot/v2/hook/..."}`.
 
 ## Status
 
-Scaffold complete on `feat/scaffold`: backend builds + vets clean, CRUD API
-smoke-tested against Postgres 16, dashboard builds. Not yet verified against a
-live bitcoind; BlockSec response mapping is tolerant but should be confirmed
-against the real endpoint shape.
+Scaffold complete: backend builds + vets clean (no tests yet — `go build ./... &&
+go vet ./...` is the only backend check), CRUD API smoke-tested against Postgres 16,
+dashboard builds. Not yet verified against a live bitcoind; BlockSec response
+mapping is tolerant but should be confirmed against the real endpoint shape.
