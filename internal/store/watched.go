@@ -216,6 +216,24 @@ func (s *Store) CountWatched(ctx context.Context, caseID int64) (int64, error) {
 	return n, err
 }
 
+// CaseSeedSats returns the largest depth-0 output of a case — the reference
+// for the relative value-decay floor.
+func (s *Store) CaseSeedSats(ctx context.Context, caseID int64) (int64, error) {
+	var n int64
+	err := s.pool.QueryRow(ctx,
+		`SELECT COALESCE(MAX(value_sats), 0) FROM watched_outputs WHERE case_id = $1 AND depth = 0`, caseID).Scan(&n)
+	return n, err
+}
+
+// WatchedAddressParentCount returns how many distinct txs paid to addr within
+// a case — the fan-in convergence signal for unlabeled service sinks.
+func (s *Store) WatchedAddressParentCount(ctx context.Context, caseID int64, addr string) (int64, error) {
+	var n int64
+	err := s.pool.QueryRow(ctx,
+		`SELECT COUNT(DISTINCT txid) FROM watched_outputs WHERE case_id = $1 AND address = $2`, caseID, addr).Scan(&n)
+	return n, err
+}
+
 type AddressInfo struct {
 	Address      string
 	Label        string
