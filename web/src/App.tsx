@@ -37,6 +37,22 @@ export function App() {
                 onClick={() => setSelected(c.id)}
               >
                 <span className="case-name">#{c.id} {c.name}</span>
+                {c.tx_total > 0 &&
+                  (c.tx_seeded < c.tx_total ? (
+                    <span
+                      className="badge pending"
+                      title={`${c.tx_total - c.tx_seeded} of ${c.tx_total} txhashes awaiting the seed walk (retrack pending or etl down)`}
+                    >
+                      seeding {c.tx_seeded}/{c.tx_total}
+                    </span>
+                  ) : (
+                    <span
+                      className="badge tracking"
+                      title={`all ${c.tx_total} txhashes seeded — spends alert on block sync`}
+                    >
+                      tracking {c.tx_total}
+                    </span>
+                  ))}
                 {c.backfill_target > 0 && c.backfill_checkpoint > 0 && c.backfill_checkpoint < c.backfill_target && (
                   <span
                     className="badge backfill"

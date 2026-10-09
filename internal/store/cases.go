@@ -20,6 +20,8 @@ type Case struct {
 	CreatedAt          time.Time `json:"created_at"`
 	BackfillCheckpoint int64     `json:"backfill_checkpoint"`
 	BackfillTarget     int64     `json:"backfill_target"`
+	TxTotal            int64     `json:"tx_total"`
+	TxSeeded           int64     `json:"tx_seeded"`
 }
 
 type CaseTx struct {
@@ -48,11 +50,16 @@ func (s *Store) CreateCase(ctx context.Context, name string, minSats *int64, dep
 	return c, err
 }
 
-const caseCols = `id, name, min_sats, depth_cap, branch_cap, status, created_at, backfill_checkpoint, backfill_target`
+// caseCols includes per-case seed counts so the dashboard can render the
+// case's seed/tracking check state without an extra query.
+const caseCols = `id, name, min_sats, depth_cap, branch_cap, status, created_at, backfill_checkpoint, backfill_target,
+	(SELECT COUNT(*) FROM case_txs WHERE case_id = cases.id) AS tx_total,
+	(SELECT COUNT(*) FROM case_txs WHERE case_id = cases.id AND seeded) AS tx_seeded`
 
 func scanCase(row pgx.Row) (Case, error) {
 	var c Case
-	err := row.Scan(&c.ID, &c.Name, &c.MinSats, &c.DepthCap, &c.BranchCap, &c.Status, &c.CreatedAt, &c.BackfillCheckpoint, &c.BackfillTarget)
+	err := row.Scan(&c.ID, &c.Name, &c.MinSats, &c.DepthCap, &c.BranchCap, &c.Status, &c.CreatedAt,
+		&c.BackfillCheckpoint, &c.BackfillTarget, &c.TxTotal, &c.TxSeeded)
 	return c, err
 }
 
