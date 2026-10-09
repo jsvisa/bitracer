@@ -91,6 +91,41 @@ func (s *Store) SetDefaultMinSats(ctx context.Context, sats int64) error {
 	return err
 }
 
+// PruneBelow drops indexed outputs worth less than minSats (and any inputs
+// that spent them) so the DB only keeps movements large enough to trace. It
+// runs at most once per threshold: sync_state.pruned_min_sats records the
+// last value pruned and repeat calls with an equal-or-lower minSats are
+// no-ops.
+func (s *Store) PruneBelow(ctx context.Context, minSats int64) (int64, error) {
+	if minSats <= 0 {
+		return 0, nil
+	}
+	var last int64
+	if err := s.pool.QueryRow(ctx,
+		`SELECT pruned_min_sats FROM sync_state WHERE id = 1`).Scan(&last); err != nil {
+		return 0, err
+	}
+	if minSats <= last {
+		return 0, nil
+	}
+	outs, err := s.pool.Exec(ctx, `DELETE FROM tx_outputs WHERE value_sats < $1`, minSats)
+	if err != nil {
+		return 0, err
+	}
+	ins, err := s.pool.Exec(ctx,
+		`DELETE FROM tx_inputs i
+		 WHERE NOT EXISTS (SELECT 1 FROM tx_outputs o
+		                   WHERE o.txid = i.spent_txid AND o.vout = i.spent_vout)`)
+	if err != nil {
+		return 0, err
+	}
+	if _, err := s.pool.Exec(ctx,
+		`UPDATE sync_state SET pruned_min_sats = $1 WHERE id = 1`, minSats); err != nil {
+		return 0, err
+	}
+	return outs.RowsAffected() + ins.RowsAffected(), nil
+}
+
 func (s *Store) InsertTxs(ctx context.Context, rows []TxRow) error {
 	if len(rows) == 0 {
 		return nil
@@ -142,7 +177,11 @@ func (s *Store) InsertInputs(ctx context.Context, rows []InRow) error {
 	}
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO tx_inputs (txid, vin, spent_txid, spent_vout, height)
-		 SELECT * FROM unnest($1::text[], $2::int[], $3::text[], $4::int[], $5::bigint[])
+		 SELECT i.txid, i.vin, i.spent_txid, i.spent_vout, i.height
+		 FROM unnest($1::text[], $2::int[], $3::text[], $4::int[], $5::bigint[])
+		      AS i(txid, vin, spent_txid, spent_vout, height)
+		 WHERE EXISTS (SELECT 1 FROM tx_outputs o
+		               WHERE o.txid = i.spent_txid AND o.vout = i.spent_vout)
 		 ON CONFLICT DO NOTHING`,
 		txids, vins, spentTxids, spentVouts, heights)
 	return err

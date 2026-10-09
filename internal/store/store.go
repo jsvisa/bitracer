@@ -132,6 +132,7 @@ var migrateStmts = []string{
 			default_min_sats BIGINT NOT NULL DEFAULT 10000000
 		)`,
 	`ALTER TABLE sync_state ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now()`,
+	`ALTER TABLE sync_state ADD COLUMN IF NOT EXISTS pruned_min_sats BIGINT NOT NULL DEFAULT 0`,
 	`INSERT INTO sync_state (id) VALUES (1) ON CONFLICT DO NOTHING`,
 	`ALTER TABLE case_channels ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT ''`,
 	`UPDATE case_channels SET name = type || '-' || id WHERE name = ''`,

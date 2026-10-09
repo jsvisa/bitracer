@@ -99,7 +99,9 @@ Usage:
 ETL flags:
   --start-block N            first block height to index (default: resume from db)
   --rpc-url URL              bitcoind RPC url (default $BTC_RPC_URL or http://127.0.0.1:8332)
-  --minimum-btc F            default minimum movement size, default 0.1
+  --minimum-btc F            default minimum tracked movement in BTC; outputs
+                             below it are not indexed and existing sub-threshold
+                             rows are pruned at startup (default 0.1)
   --rpc-user U               bitcoind rpcpair user ($BTC_RPC_USER)
   --rpc-pass P               bitcoind rpcpass ($BTC_RPC_PASS)
   --db-url URL               postgres url ($DATABASE_URL)
