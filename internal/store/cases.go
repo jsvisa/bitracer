@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type Case struct {
@@ -28,9 +29,12 @@ type CaseTx struct {
 type Channel struct {
 	ID     int64           `json:"id"`
 	CaseID int64           `json:"case_id"`
+	Name   string          `json:"name"`
 	Type   string          `json:"type"`
 	Config json.RawMessage `json:"config"`
 }
+
+var ErrDuplicate = errors.New("already exists")
 
 func (s *Store) CreateCase(ctx context.Context, name string, minSats *int64, depthCap, branchCap int32) (Case, error) {
 	var c Case
@@ -155,17 +159,24 @@ func (s *Store) SetCaseTxSeeded(ctx context.Context, caseID int64, txid string) 
 	return err
 }
 
-func (s *Store) AddChannel(ctx context.Context, caseID int64, typ string, cfg json.RawMessage) (Channel, error) {
+func (s *Store) AddChannel(ctx context.Context, caseID int64, name, typ string, cfg json.RawMessage) (Channel, error) {
 	var ch Channel
 	err := s.pool.QueryRow(ctx,
-		`INSERT INTO case_channels (case_id, type, config) VALUES ($1, $2, $3)
-		 RETURNING id, case_id, type, config`, caseID, typ, cfg).Scan(&ch.ID, &ch.CaseID, &ch.Type, &ch.Config)
+		`INSERT INTO case_channels (case_id, name, type, config) VALUES ($1, $2, $3, $4)
+		 RETURNING id, case_id, name, type, config`, caseID, name, typ, cfg).
+		Scan(&ch.ID, &ch.CaseID, &ch.Name, &ch.Type, &ch.Config)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return ch, ErrDuplicate
+		}
+	}
 	return ch, err
 }
 
 func (s *Store) ListChannels(ctx context.Context, caseID int64) ([]Channel, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, case_id, type, config FROM case_channels WHERE case_id = $1 ORDER BY id`, caseID)
+		`SELECT id, case_id, name, type, config FROM case_channels WHERE case_id = $1 ORDER BY id`, caseID)
 	if err != nil {
 		return nil, err
 	}
@@ -173,7 +184,7 @@ func (s *Store) ListChannels(ctx context.Context, caseID int64) ([]Channel, erro
 	var out []Channel
 	for rows.Next() {
 		var ch Channel
-		if err := rows.Scan(&ch.ID, &ch.CaseID, &ch.Type, &ch.Config); err != nil {
+		if err := rows.Scan(&ch.ID, &ch.CaseID, &ch.Name, &ch.Type, &ch.Config); err != nil {
 			return nil, err
 		}
 		out = append(out, ch)

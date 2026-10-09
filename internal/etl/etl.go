@@ -11,6 +11,7 @@ import (
 	"github.com/jsvisa/bitracer/internal/alerts"
 	"github.com/jsvisa/bitracer/internal/btc"
 	"github.com/jsvisa/bitracer/internal/config"
+	"github.com/jsvisa/bitracer/internal/notify"
 	"github.com/jsvisa/bitracer/internal/store"
 )
 
@@ -218,11 +219,20 @@ func (e *ETL) afterSpend(ctx context.Context, m store.WatchedMatch, spenderTxid 
 	if err := e.addWatchedFromTx(ctx, m.CaseID, m.MinSats, m.DepthCap, m.BranchCap, spenderTxid, outs, m.Depth+1, height); err != nil {
 		return err
 	}
-	msg := fmt.Sprintf("[bitracer] case#%d: %.8f BTC moved %s:%d -> spent by %s (depth %d, %s)",
-		m.CaseID, btc.SatsToBTC(m.ValueSats), short(m.Txid), m.Vout, short(spenderTxid), m.Depth+1, heightLabel(height))
+	msg := notify.Message{
+		Kind:      kind,
+		CaseID:    m.CaseID,
+		Headline: fmt.Sprintf("%.8f BTC moved %s:%d -> spent by %s",
+			btc.SatsToBTC(m.ValueSats), short(m.Txid), m.Vout, short(spenderTxid)),
+		Txid:      spenderTxid,
+		Address:   m.Address,
+		ValueSats: m.ValueSats,
+		Depth:     m.Depth + 1,
+		Height:    heightLabel(height),
+	}
 	return alerts.Emit(ctx, e.st, store.Alert{
 		CaseID: m.CaseID, Txid: spenderTxid, Address: m.Address,
-		ValueSats: m.ValueSats, Depth: m.Depth + 1, Kind: kind, Message: msg,
+		ValueSats: m.ValueSats, Depth: m.Depth + 1, Kind: kind,
 	}, msg)
 }
 
@@ -284,11 +294,19 @@ func (e *ETL) checkTerminal(ctx context.Context, caseID int64, txid string, vout
 	if name == "" {
 		name = "labeled entity"
 	}
-	msg := fmt.Sprintf("[bitracer] case#%d: %.8f BTC reached %s (%s) at %s:%d (depth %d) — STOP",
-		caseID, btc.SatsToBTC(sats), name, addr, short(txid), vout, depth)
+	msg := notify.Message{
+		Kind:      "cex",
+		CaseID:    caseID,
+		Headline: fmt.Sprintf("%.8f BTC reached %s — STOP", btc.SatsToBTC(sats), name),
+		Entity:   name,
+		Txid:     txid,
+		Address:  addr,
+		ValueSats: sats,
+		Depth:    depth,
+	}
 	return alerts.Emit(ctx, e.st, store.Alert{
 		CaseID: caseID, Txid: txid, Address: addr,
-		ValueSats: sats, Depth: depth, Kind: "cex", Message: msg,
+		ValueSats: sats, Depth: depth, Kind: "cex",
 	}, msg)
 }
 
@@ -329,8 +347,13 @@ func (e *ETL) SeedPendingCases(ctx context.Context) error {
 		if err := e.st.SetCaseTxSeeded(ctx, seed.CaseID, seed.Txid); err != nil {
 			return err
 		}
-		msg := fmt.Sprintf("[bitracer] case#%d: now tracking %s", seed.CaseID, seed.Txid)
-		if err := alerts.Emit(ctx, e.st, store.Alert{CaseID: seed.CaseID, Txid: seed.Txid, Kind: "seed", Message: msg}, msg); err != nil {
+		msg := notify.Message{
+			Kind:     "seed",
+			CaseID:   seed.CaseID,
+			Headline: "now tracking " + seed.Txid,
+			Txid:     seed.Txid,
+		}
+		if err := alerts.Emit(ctx, e.st, store.Alert{CaseID: seed.CaseID, Txid: seed.Txid, Kind: "seed"}, msg); err != nil {
 			return err
 		}
 		slog.Info("seeded case tx", "case", seed.CaseID, "txid", seed.Txid, "outputs", len(outs))

@@ -17,6 +17,13 @@ export interface CaseTx {
 export interface Channel {
   id: number
   case_id: number
+  name: string
+  type: string
+  config: Record<string, string>
+}
+
+export interface ChannelInput {
+  name: string
   type: string
   config: Record<string, string>
 }
@@ -71,8 +78,11 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   listCases: () => req<Case[]>('/api/cases'),
-  createCase: (name: string, minBTC?: number) =>
-    req<Case>('/api/cases', { method: 'POST', body: JSON.stringify({ name, min_btc: minBTC }) }),
+  createCase: (name: string, minBTC?: number, channel?: ChannelInput) =>
+    req<Case>('/api/cases', {
+      method: 'POST',
+      body: JSON.stringify({ name, min_btc: minBTC, channel }),
+    }),
   deleteCase: (id: number) => req<void>(`/api/cases/${id}`, { method: 'DELETE' }),
   setCaseStatus: (id: number, status: string) =>
     req<void>(`/api/cases/${id}`, { method: 'PATCH', body: JSON.stringify({ status }) }),
@@ -84,8 +94,10 @@ export const api = {
     req<void>(`/api/cases/${id}/txs/${txid}`, { method: 'DELETE' }),
 
   listChannels: (id: number) => req<Channel[]>(`/api/cases/${id}/channels`),
-  addChannel: (id: number, type: string, config: Record<string, string>) =>
-    req<Channel>(`/api/cases/${id}/channels`, { method: 'POST', body: JSON.stringify({ type, config }) }),
+  addChannel: (id: number, name: string, type: string, config: Record<string, string>) =>
+    req<Channel>(`/api/cases/${id}/channels`, { method: 'POST', body: JSON.stringify({ name, type, config }) }),
+  testChannel: (type: string, config: Record<string, string>) =>
+    req<void>('/api/channels/test', { method: 'POST', body: JSON.stringify({ type, config }) }),
   deleteChannel: (channelID: number) => req<void>(`/api/channels/${channelID}`, { method: 'DELETE' }),
 
   listAlerts: (caseID?: number) =>
@@ -96,3 +108,5 @@ export const api = {
 }
 
 export const satsToBTC = (s: number) => s / 1e8
+
+export const mempoolTx = (txid: string) => `https://mempool.space/tx/${txid}`

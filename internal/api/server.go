@@ -3,12 +3,14 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/jsvisa/bitracer/internal/btc"
 	"github.com/jsvisa/bitracer/internal/labeler"
+	"github.com/jsvisa/bitracer/internal/notify"
 	"github.com/jsvisa/bitracer/internal/store"
 )
 
@@ -35,6 +37,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/cases/{id}/txs/{txid}", s.deleteCaseTx)
 	mux.HandleFunc("GET /api/cases/{id}/channels", s.listChannels)
 	mux.HandleFunc("POST /api/cases/{id}/channels", s.addChannel)
+	mux.HandleFunc("POST /api/channels/test", s.testChannel)
 	mux.HandleFunc("DELETE /api/channels/{id}", s.deleteChannel)
 	mux.HandleFunc("GET /api/alerts", s.listAlerts)
 	mux.HandleFunc("GET /api/graph", s.graph)
@@ -57,12 +60,26 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+type channelBody struct {
+	Name   string          `json:"name"`
+	Type   string          `json:"type"`
+	Config json.RawMessage `json:"config"`
+}
+
 type caseBody struct {
-	Name      string   `json:"name"`
-	Status    string   `json:"status"`
-	MinBTC    *float64 `json:"min_btc"`
-	DepthCap  *int32   `json:"depth_cap"`
-	BranchCap *int32   `json:"branch_cap"`
+	Name      string       `json:"name"`
+	Status    string       `json:"status"`
+	MinBTC    *float64     `json:"min_btc"`
+	DepthCap  *int32       `json:"depth_cap"`
+	BranchCap *int32       `json:"branch_cap"`
+	Channel   *channelBody `json:"channel"`
+}
+
+func (ch *channelBody) validate() error {
+	if strings.TrimSpace(ch.Name) == "" {
+		return errors.New("channel name required")
+	}
+	return nil
 }
 
 func (s *Server) createCase(w http.ResponseWriter, r *http.Request) {
@@ -74,6 +91,18 @@ func (s *Server) createCase(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(b.Name) == "" {
 		writeErr(w, http.StatusBadRequest, errors.New("name required"))
 		return
+	}
+	var ch *channelBody
+	if b.Channel != nil && strings.TrimSpace(b.Channel.Type) != "" {
+		if err := b.Channel.validate(); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		if _, err := validateChannel(b.Channel.Type, b.Channel.Config); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		ch = b.Channel
 	}
 	var minSats *int64
 	if b.MinBTC != nil && *b.MinBTC > 0 {
@@ -91,6 +120,12 @@ func (s *Server) createCase(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
+	}
+	if ch != nil {
+		if _, err := s.st.AddChannel(r.Context(), c.ID, strings.TrimSpace(ch.Name), ch.Type, ch.Config); err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
 	}
 	writeJSON(w, http.StatusCreated, c)
 }
@@ -273,11 +308,12 @@ func (s *Server) addChannel(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	var b struct {
-		Type   string          `json:"type"`
-		Config json.RawMessage `json:"config"`
-	}
+	var b channelBody
 	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := b.validate(); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
@@ -285,12 +321,34 @@ func (s *Server) addChannel(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	ch, err := s.st.AddChannel(r.Context(), id, b.Type, b.Config)
+	ch, err := s.st.AddChannel(r.Context(), id, strings.TrimSpace(b.Name), b.Type, b.Config)
 	if err != nil {
+		if errors.Is(err, store.ErrDuplicate) {
+			writeErr(w, http.StatusConflict, errors.New("a channel with this name already exists in the case"))
+			return
+		}
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, ch)
+}
+
+func (s *Server) testChannel(w http.ResponseWriter, r *http.Request) {
+	var b channelBody
+	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	n, err := buildNotifier(b.Type, b.Config)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := n.Send(r.Context(), notify.TestMessage()); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("test message failed: %w", err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"ok": "test message sent"})
 }
 
 func (s *Server) deleteChannel(w http.ResponseWriter, r *http.Request) {

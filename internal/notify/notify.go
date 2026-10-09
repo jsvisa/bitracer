@@ -7,13 +7,82 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/jsvisa/bitracer/internal/btc"
 )
+
+const ExplorerTxBase = "https://mempool.space/tx/"
+
+func ExplorerTxURL(txid string) string { return ExplorerTxBase + txid }
+
+type Message struct {
+	Kind      string
+	CaseID    int64
+	Headline  string
+	Txid      string
+	Address   string
+	Entity    string
+	ValueSats int64
+	Depth     int32
+	Height    string
+}
+
+func TestMessage() Message {
+	return Message{Kind: "test", Headline: "test notification — bitracer can reach this channel"}
+}
+
+// Plain renders the flat one-liner stored in the alerts table.
+func (m Message) Plain() string {
+	return fmt.Sprintf("[bitracer] case#%d: %s", m.CaseID, m.Headline)
+}
+
+// fields returns the labeled detail rows shared by the pretty renderers.
+func (m Message) fields() [][2]string {
+	var f [][2]string
+	add := func(k, v string) {
+		if v != "" {
+			f = append(f, [2]string{k, v})
+		}
+	}
+	add("case", fmt.Sprintf("#%d", m.CaseID))
+	if m.ValueSats > 0 {
+		add("value", fmt.Sprintf("%.8f BTC", btc.SatsToBTC(m.ValueSats)))
+	}
+	if m.Entity != "" {
+		add("entity", m.Entity)
+	}
+	if m.Address != "" {
+		add("address", m.Address)
+	}
+	if m.Depth > 0 {
+		add("depth", fmt.Sprintf("%d", m.Depth))
+	}
+	if m.Height != "" {
+		add("status", m.Height)
+	}
+	return f
+}
+
+func shortTx(txid string) string {
+	if len(txid) <= 12 {
+		return txid
+	}
+	return txid[:10] + "…"
+}
+
+func shortAddr(addr string) string {
+	if len(addr) <= 20 {
+		return addr
+	}
+	return addr[:8] + "…" + addr[len(addr)-6:]
+}
 
 type Notifier interface {
 	Name() string
-	Send(ctx context.Context, msg string) error
+	Send(ctx context.Context, msg Message) error
 }
 
 func Build(typ string, raw json.RawMessage) (Notifier, error) {
@@ -57,7 +126,7 @@ func Build(typ string, raw json.RawMessage) (Notifier, error) {
 	}
 }
 
-func SendAll(ctx context.Context, notifiers []Notifier, msg string) {
+func SendAll(ctx context.Context, notifiers []Notifier, msg Message) {
 	var wg sync.WaitGroup
 	for _, n := range notifiers {
 		wg.Add(1)
@@ -94,16 +163,71 @@ func postJSON(ctx context.Context, url string, payload any) error {
 	return nil
 }
 
+func kindLabel(m Message) string {
+	switch m.Kind {
+	case "":
+		return "alert"
+	case "test":
+		return "test"
+	default:
+		return m.Kind
+	}
+}
+
+// Slack renders Block Kit: colored-attachment style with mrkdwn fields
+// and a mempool.space link on the txhash.
 type Slack struct{ webhook string }
 
 func NewSlack(webhook string) *Slack { return &Slack{webhook: webhook} }
 
 func (s *Slack) Name() string { return "slack" }
 
-func (s *Slack) Send(ctx context.Context, msg string) error {
-	return postJSON(ctx, s.webhook, map[string]string{"text": msg})
+func (s *Slack) Send(ctx context.Context, msg Message) error {
+	var b strings.Builder
+	if msg.Txid != "" {
+		fmt.Fprintf(&b, "*tx:* <%s|%s>\n", ExplorerTxURL(msg.Txid), shortTx(msg.Txid))
+	}
+	for _, f := range msg.fields() {
+		v := f[1]
+		if f[0] == "address" {
+			v = "`" + shortAddr(v) + "`"
+		}
+		fmt.Fprintf(&b, "*%s:* %s\n", f[0], v)
+	}
+	headline := msg.Headline
+	if headline == "" {
+		headline = msg.Plain()
+	}
+	color := "#bf616a"
+	if msg.Kind == "cex" || msg.Kind == "test" {
+		color = "#a3be8c"
+	}
+	payload := map[string]any{
+		"text": msg.Plain(),
+		"attachments": []any{
+			map[string]any{
+				"color": color,
+				"blocks": []any{
+					map[string]any{
+						"type": "header",
+						"text": map[string]string{"type": "plain_text", "text": truncate("bitracer · "+kindLabel(msg), 140)},
+					},
+					map[string]any{
+						"type": "section",
+						"text": map[string]string{"type": "mrkdwn", "text": strings.TrimSpace(headline)},
+					},
+					map[string]any{
+						"type": "section",
+						"text": map[string]string{"type": "mrkdwn", "text": strings.TrimRight(b.String(), "\n")},
+					},
+				},
+			},
+		},
+	}
+	return postJSON(ctx, s.webhook, payload)
 }
 
+// Telegram renders HTML with bold labels and a mempool.space link.
 type Telegram struct {
 	token string
 	chat  string
@@ -113,20 +237,66 @@ func NewTelegram(token, chat string) *Telegram { return &Telegram{token: token, 
 
 func (t *Telegram) Name() string { return "telegram" }
 
-func (t *Telegram) Send(ctx context.Context, msg string) error {
+func (t *Telegram) Send(ctx context.Context, msg Message) error {
+	var b strings.Builder
+	fmt.Fprintf(&b, "<b>bitracer · %s</b>\n", kindLabel(msg))
+	fmt.Fprintf(&b, "<b>%s</b>\n", escapeHTML(msg.Headline))
+	for _, f := range msg.fields() {
+		fmt.Fprintf(&b, "<b>%s:</b> %s\n", escapeHTML(f[0]), escapeHTML(f[1]))
+	}
+	if msg.Txid != "" {
+		fmt.Fprintf(&b, "<b>tx:</b> <a href=\"%s\">%s</a>\n", ExplorerTxURL(msg.Txid), shortTx(msg.Txid))
+	}
 	return postJSON(ctx, "https://api.telegram.org/bot"+t.token+"/sendMessage",
-		map[string]string{"chat_id": t.chat, "text": msg})
+		map[string]string{"chat_id": t.chat, "text": strings.TrimSpace(b.String()), "parse_mode": "HTML"})
 }
 
+// Lark renders an interactive card with markdown elements and a
+// mempool.space link.
 type Lark struct{ webhook string }
 
 func NewLark(webhook string) *Lark { return &Lark{webhook: webhook} }
 
 func (l *Lark) Name() string { return "lark" }
 
-func (l *Lark) Send(ctx context.Context, msg string) error {
-	return postJSON(ctx, l.webhook, map[string]any{
-		"msg_type": "text",
-		"content":  map[string]string{"text": msg},
-	})
+func (l *Lark) Send(ctx context.Context, msg Message) error {
+	var b strings.Builder
+	fmt.Fprintf(&b, "**%s**\n", msg.Headline)
+	for _, f := range msg.fields() {
+		fmt.Fprintf(&b, "- **%s:** %s\n", f[0], f[1])
+	}
+	if msg.Txid != "" {
+		fmt.Fprintf(&b, "- **tx:** [%s](%s)\n", shortTx(msg.Txid), ExplorerTxURL(msg.Txid))
+	}
+	template := "red"
+	if msg.Kind == "cex" || msg.Kind == "test" {
+		template = "green"
+	}
+	payload := map[string]any{
+		"msg_type": "interactive",
+		"card": map[string]any{
+			"header": map[string]any{
+				"title":    map[string]string{"tag": "plain_text", "content": truncate("bitracer · "+kindLabel(msg), 100)},
+				"template": template,
+			},
+			"elements": []any{
+				map[string]string{"tag": "markdown", "content": strings.TrimSpace(b.String())},
+				map[string]any{"tag": "hr"},
+				map[string]string{"tag": "plain_text", "content": "sent by bitracer"},
+			},
+		},
+	}
+	return postJSON(ctx, l.webhook, payload)
+}
+
+func escapeHTML(s string) string {
+	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
+	return r.Replace(s)
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n-1] + "…"
 }

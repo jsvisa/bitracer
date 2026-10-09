@@ -9,6 +9,7 @@ import (
 	"github.com/jsvisa/bitracer/internal/alerts"
 	"github.com/jsvisa/bitracer/internal/btc"
 	"github.com/jsvisa/bitracer/internal/labels"
+	"github.com/jsvisa/bitracer/internal/notify"
 	"github.com/jsvisa/bitracer/internal/store"
 )
 
@@ -105,11 +106,19 @@ func (s *Service) markTerminal(ctx context.Context, addr string, lbl *labels.Lab
 		if !flipped {
 			continue
 		}
-		msg := fmt.Sprintf("[bitracer] case#%d: %.8f BTC reached %s (%s) at %s:%d (depth %d) — STOP",
-			r.CaseID, btc.SatsToBTC(r.ValueSats), lbl.Name, addr, short(r.Txid), r.Vout, r.Depth)
+		msg := notify.Message{
+			Kind:      "cex",
+			CaseID:    r.CaseID,
+			Headline:  fmt.Sprintf("%.8f BTC reached %s — STOP", btc.SatsToBTC(r.ValueSats), lbl.Name),
+			Entity:    lbl.Name,
+			Txid:      r.Txid,
+			Address:   addr,
+			ValueSats: r.ValueSats,
+			Depth:     r.Depth,
+		}
 		if err := alerts.Emit(ctx, s.st, store.Alert{
 			CaseID: r.CaseID, Txid: r.Txid, Address: addr,
-			ValueSats: r.ValueSats, Depth: r.Depth, Kind: "cex", Message: msg,
+			ValueSats: r.ValueSats, Depth: r.Depth, Kind: "cex",
 		}, msg); err != nil {
 			slog.Error("cex alert failed", "case", r.CaseID, "err", err)
 		}

@@ -216,6 +216,21 @@ th {
   margin: 4px 0;
 }
 
+.ok {
+  color: #a3be8c;
+  font-size: 12px;
+  margin: 4px 0;
+}
+
+a {
+  color: #88c0d0;
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
 .empty {
   color: #9aa5b8;
   font-size: 13px;
