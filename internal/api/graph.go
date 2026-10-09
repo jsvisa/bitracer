@@ -47,12 +47,16 @@ func (s *Server) graph(w http.ResponseWriter, r *http.Request) {
 	}
 	nodes := map[string]*graphNode{}
 	edges := map[string]*graphEdge{}
+	// attached tracks txids whose outputs are already merged into nodes/edges,
+	// so a tx is never counted twice (attachOutputs at level N vs loadOutpoints
+	// at level N+1).
+	attached := map[string]bool{}
 	total := 0
 	curTxids := roots
 	visitedTx := map[string]bool{}
 
 	for d := 0; d <= depth && len(curTxids) > 0 && total < graphRowCap; d++ {
-		spentTxids, spentVouts, ok := s.loadOutpoints(r.Context(), curTxids, nodes, edges)
+		spentTxids, spentVouts, ok := s.loadOutpoints(r.Context(), curTxids, nodes, edges, attached)
 		if !ok {
 			writeErr(w, http.StatusInternalServerError, errGraphQuery)
 			return
@@ -72,7 +76,12 @@ func (s *Server) graph(w http.ResponseWriter, r *http.Request) {
 			aNode := "a:" + addrKey(e.Address)
 			tNode := "t:" + e.Spender
 			eid := aNode + "->" + tNode
-			edges[eid] = &graphEdge{ID: eid, Source: aNode, Target: tNode, Value: btc.SatsToBTC(e.ValueSats), Txid: e.Spender, Height: e.Height}
+			// one address can feed a spender via several outpoints; aggregate
+			if prev, ok := edges[eid]; ok {
+				prev.Value += btc.SatsToBTC(e.ValueSats)
+			} else {
+				edges[eid] = &graphEdge{ID: eid, Source: aNode, Target: tNode, Value: btc.SatsToBTC(e.ValueSats), Txid: e.Spender, Height: e.Height}
+			}
 			if !spenderSet[e.Spender] && !visitedTx[e.Spender] {
 				spenderSet[e.Spender] = true
 				next = append(next, e.Spender)
@@ -82,7 +91,7 @@ func (s *Server) graph(w http.ResponseWriter, r *http.Request) {
 			visitedTx[t] = true
 		}
 		if len(next) > 0 {
-			if err := s.attachOutputs(r.Context(), next, nodes, edges); err != nil {
+			if err := s.attachOutputs(r.Context(), next, nodes, edges, attached); err != nil {
 				writeErr(w, http.StatusInternalServerError, err)
 				return
 			}
@@ -150,7 +159,7 @@ func addrKey(addr string) string {
 	return addr
 }
 
-func (s *Server) loadOutpoints(ctx context.Context, txids []string, nodes map[string]*graphNode, edges map[string]*graphEdge) ([]string, []int32, bool) {
+func (s *Server) loadOutpoints(ctx context.Context, txids []string, nodes map[string]*graphNode, edges map[string]*graphEdge, attached map[string]bool) ([]string, []int32, bool) {
 	outs, err := s.st.OutputsForTxids(ctx, txids)
 	if err != nil {
 		return nil, nil, false
@@ -160,46 +169,56 @@ func (s *Server) loadOutpoints(ctx context.Context, txids []string, nodes map[st
 	for _, o := range outs {
 		spentTxids = append(spentTxids, o.Txid)
 		spentVouts = append(spentVouts, o.Vout)
-		txNode := "t:" + o.Txid
-		nodes[txNode] = &graphNode{ID: txNode, Type: "tx", Label: shortTxid(o.Txid)}
-		aNode := "a:" + addrKey(o.Address)
-		eid := txNode + "->" + aNode
-		if prev, ok := edges[eid]; ok {
-			prev.Value += btc.SatsToBTC(o.ValueSats)
-		} else {
-			edges[eid] = &graphEdge{ID: eid, Source: txNode, Target: aNode, Value: btc.SatsToBTC(o.ValueSats), Txid: o.Txid}
+		if !attached[o.Txid] {
+			txNode := "t:" + o.Txid
+			nodes[txNode] = &graphNode{ID: txNode, Type: "tx", Label: shortTxid(o.Txid)}
+			aNode := "a:" + addrKey(o.Address)
+			eid := txNode + "->" + aNode
+			if prev, ok := edges[eid]; ok {
+				prev.Value += btc.SatsToBTC(o.ValueSats)
+			} else {
+				edges[eid] = &graphEdge{ID: eid, Source: txNode, Target: aNode, Value: btc.SatsToBTC(o.ValueSats), Txid: o.Txid}
+			}
+			if n, ok := nodes[aNode]; ok {
+				n.Value += btc.SatsToBTC(o.ValueSats)
+			} else {
+				nodes[aNode] = &graphNode{ID: aNode, Type: "address", Label: shortAddr(addrKey(o.Address)), Value: btc.SatsToBTC(o.ValueSats)}
+			}
 		}
-		if n, ok := nodes[aNode]; ok {
-			n.Value += btc.SatsToBTC(o.ValueSats)
-		} else {
-			nodes[aNode] = &graphNode{ID: aNode, Type: "address", Label: shortAddr(addrKey(o.Address)), Value: btc.SatsToBTC(o.ValueSats)}
-		}
+	}
+	for _, o := range outs {
+		attached[o.Txid] = true
 	}
 	return spentTxids, spentVouts, true
 }
 
-func (s *Server) attachOutputs(ctx context.Context, txids []string, nodes map[string]*graphNode, edges map[string]*graphEdge) error {
+func (s *Server) attachOutputs(ctx context.Context, txids []string, nodes map[string]*graphNode, edges map[string]*graphEdge, attached map[string]bool) error {
 	outs, err := s.st.OutputsForTxids(ctx, txids)
 	if err != nil {
 		return err
 	}
 	for _, o := range outs {
-		txNode := "t:" + o.Txid
-		if _, ok := nodes[txNode]; !ok {
-			nodes[txNode] = &graphNode{ID: txNode, Type: "tx", Label: shortTxid(o.Txid)}
+		if !attached[o.Txid] {
+			txNode := "t:" + o.Txid
+			if _, ok := nodes[txNode]; !ok {
+				nodes[txNode] = &graphNode{ID: txNode, Type: "tx", Label: shortTxid(o.Txid)}
+			}
+			aNode := "a:" + addrKey(o.Address)
+			eid := txNode + "->" + aNode
+			if prev, ok := edges[eid]; ok {
+				prev.Value += btc.SatsToBTC(o.ValueSats)
+			} else {
+				edges[eid] = &graphEdge{ID: eid, Source: txNode, Target: aNode, Value: btc.SatsToBTC(o.ValueSats), Txid: o.Txid}
+			}
+			if n, ok := nodes[aNode]; ok {
+				n.Value += btc.SatsToBTC(o.ValueSats)
+			} else {
+				nodes[aNode] = &graphNode{ID: aNode, Type: "address", Label: shortAddr(addrKey(o.Address)), Value: btc.SatsToBTC(o.ValueSats)}
+			}
 		}
-		aNode := "a:" + addrKey(o.Address)
-		eid := txNode + "->" + aNode
-		if prev, ok := edges[eid]; ok {
-			prev.Value += btc.SatsToBTC(o.ValueSats)
-		} else {
-			edges[eid] = &graphEdge{ID: eid, Source: txNode, Target: aNode, Value: btc.SatsToBTC(o.ValueSats), Txid: o.Txid}
-		}
-		if n, ok := nodes[aNode]; ok {
-			n.Value += btc.SatsToBTC(o.ValueSats)
-		} else {
-			nodes[aNode] = &graphNode{ID: aNode, Type: "address", Label: shortAddr(addrKey(o.Address)), Value: btc.SatsToBTC(o.ValueSats)}
-		}
+	}
+	for _, o := range outs {
+		attached[o.Txid] = true
 	}
 	return nil
 }
