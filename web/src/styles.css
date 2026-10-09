@@ -160,6 +160,18 @@ main {
   font-family: ui-monospace, 'SF Mono', Menlo, monospace;
 }
 
+.badge.pending {
+  background: #d08770;
+  color: #2e3440;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+}
+
+.badge.tracking {
+  background: #a3be8c;
+  color: #2e3440;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+}
+
 .detail {
   display: flex;
   flex-direction: column;

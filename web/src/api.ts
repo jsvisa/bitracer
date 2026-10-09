@@ -8,6 +8,8 @@ export interface Case {
   created_at: string
   backfill_checkpoint: number
   backfill_target: number
+  tx_total: number
+  tx_seeded: number
 }
 
 export interface CaseTx {
