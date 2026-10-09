@@ -2,10 +2,12 @@
 
 Stolen-funds tracking for Bitcoin. Given one or more source txhashes ("cases"),
 follow every movement of their outputs (above a minimum threshold, e.g. 0.1 BTC)
-block by block over bitcoind's JSON-RPC until each path terminates at a labeled
-entity (CEX/exchange via the BlockSec address-label API). Alerts fan out to
-Slack / Telegram / Lark channels configured per case in the web dashboard, which
-also draws the fund-flow graph from the local Postgres index.
+block by block over bitcoind's JSON-RPC until each path terminates at a terminal
+entity — an exchange (CEX), mixer, gambling/darknet/service address (via the
+BlockSec address-label API or manual pinning), or a mixer-shaped spender tx
+(coinjoin denominations). Alerts fan out to Slack / Telegram / Lark channels
+configured per case in the web dashboard, which also draws the fund-flow graph
+from the local Postgres index.
 
 ## Architecture
 
@@ -18,7 +20,8 @@ bitracer etl      full-chain indexer + case walker (no external calls)
   - follows the tip by polling getblockchaininfo (BITRACER_SYNC_INTERVAL)
   - watches case source txhashes and every descendant output >= min threshold
   - reorg-safe (block-hash check + reset window)
-  - stop-at-CEX uses only the local label cache
+  - stop-at-terminal-entity (CEX/mixer/service via the local label cache) and
+    stop-at-mixer-shaped spender tx (equal-value denominations)
    |
    v
 Postgres          txs, tx_outputs, tx_inputs (chain index)
@@ -29,7 +32,8 @@ Postgres          txs, tx_outputs, tx_inputs (chain index)
 bitracer serve    REST API + dashboard + labeler worker (investigate phase)
   - cases CRUD, txhashes per case, notify channels per case
   - labeler: resolves addresses via pluggable vendors (BlockSec, ...),
-    caches results, flips watched outputs to terminal on CEX hits
+    caches results, flips watched outputs to terminal on terminal-entity hits
+    (exchange, mixer, gambling, darknet, service)
   - /api/graph: BFS over the spend index (tx<->address bipartite graph)
 ```
 
@@ -95,7 +99,27 @@ DATABASE_URL=postgres://... BLOCKSEC_LABEL_APIKEY=... ./bitracer serve
 Environment: `DATABASE_URL`, `BTC_RPC_URL`, `BTC_RPC_USER`, `BTC_RPC_PASS`,
 `BLOCKSEC_LABEL_APIKEY`, `BLOCKSEC_LABEL_URL`, `BLOCKSEC_LABEL_CHAIN_ID`
 (`-1` = bitcoin), `BITRACER_SYNC_INTERVAL` (default 15s), `BITRACER_LABEL_INTERVAL`
-(60s), `BITRACER_LISTEN` (default `:8080`), `BITRACER_WEB_DIR` (default `web/dist`).
+(60s), `BITRACER_LISTEN` (default `:8080`), `BITRACER_WEB_DIR` (default `web/dist`),
+`BITRACER_FANOUT_DENOM` (stop when a spender tx has ≥ N outputs of one exact
+value — the coinjoin/mixer signature; default 5), `BITRACER_FANOUT_ADDRS`
+(stop when a spender tx pays ≥ N distinct addresses; default 0 = off — too
+eager for exchange payout sweeps and thief splits), `BITRACER_FANIN_COUNT`
+(stop when ≥ N distinct flows converge on one unlabeled address — the
+service/exchange sink signature; default 5, kind `fanin`),
+`BITRACER_DECAY_PCT` (don't follow branch outputs below this percentage of the
+case's largest seed output; default 1, 0 = off), `BITRACER_SEED_LABELS` (path
+to a JSON file of known entities, inserted without clobbering vendor labels or
+manual pins):
+
+```json
+{
+  "bc1q…mixer-address": { "label": "Known Mixer", "kind": "mixer" },
+  "1A…exchange-hot":    { "label": "Exchange Hot 1", "kind": "cex" },
+  "3C…attributed-only": { "label": "Some Entity", "kind": "" }
+}
+```
+
+Entries with a `kind` are terminal stops; `"kind": ""` is attribution only.
 
 ### Dashboard
 
@@ -119,6 +143,10 @@ GET    /api/cases/{id}/channels    POST /api/cases/{id}/channels {type, config}
 DELETE /api/channels/{id}
 GET    /api/alerts?case_id=&limit=
 GET    /api/graph?txid=&depth=
+GET    /api/label?address=
+POST   /api/cases/{id}/resolve-labels
+POST   /api/addresses/{address}/terminal   {kind: cex|mixer|service|gambling|darknet|manual}
+DELETE /api/addresses/{address}/terminal
 ```
 
 Channel configs: slack `{"webhook": "https://hooks.slack.com/...", "channel":
@@ -131,8 +159,22 @@ lark `{"webhook": "https://open.larksuite.com/open-apis/bot/v2/hook/..."}`.
 
 - An output is watched only if `value >= case.min_sats` (or the daemon default);
   dust branches are not followed.
-- A path stops when an output address is labeled CEX/exchange by the BlockSec
-  provider, or at `depth_cap` / `branch_cap` per case.
+- A path stops (output flips to `terminal`) when the address is a terminal
+  entity: CEX/exchange, mixer, gambling, darknet or service per the BlockSec
+  category mapping, or any address pinned by hand via
+  `POST /api/addresses/{address}/terminal` — covers services the vendor does
+  not label. It also stops when the spender tx looks like a mixer/coinjoin
+  (see `BITRACER_FANOUT_DENOM`/`BITRACER_FANOUT_ADDRS`): mixer outflow is
+  mostly unrelated churn, so following it would only explode the branch tree.
+  Every stop emits an alert whose kind names the reason
+  (`cex`/`mixer`/`service`/`fanout`/...), or at `depth_cap` / `branch_cap`.
+- **Fan-in stop**: when ≥ `BITRACER_FANIN_COUNT` distinct flows converge on
+  one unlabeled address, it is marked terminal (kind `fanin`, red — a
+  suspicion worth reviewing, not a confirmed entity): services and exchange
+  hot wallets are where unrelated flows meet.
+- **Value-decay floor**: branch outputs below `BITRACER_DECAY_PCT` % of the
+  case's largest seed output are not followed, keeping long small-value
+  tails bounded.
 - Reorgs: when the stored block hash at height H mismatches the chain, all
   index/watch data at >= H is reset and re-synced.
 - Spends are detected on block sync only (no mempool polling); alerts arrive

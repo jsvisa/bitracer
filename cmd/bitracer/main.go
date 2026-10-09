@@ -113,7 +113,15 @@ Serve flags:
 Environment:
   DATABASE_URL, BTC_RPC_URL, BTC_RPC_USER, BTC_RPC_PASS,
   BLOCKSEC_LABEL_APIKEY, BLOCKSEC_LABEL_URL, BLOCKSEC_LABEL_CHAIN_ID,
-  BITRACER_SYNC_INTERVAL, BITRACER_LABEL_INTERVAL, BITRACER_LISTEN, BITRACER_WEB_DIR
+  BITRACER_SYNC_INTERVAL, BITRACER_LABEL_INTERVAL, BITRACER_LISTEN, BITRACER_WEB_DIR,
+  BITRACER_FANOUT_DENOM (stop on spender txs with N equal-value outputs, default 5),
+  BITRACER_FANOUT_ADDRS (stop on spender txs reaching N distinct addresses, default 0 = off),
+  BITRACER_FANIN_COUNT (stop when N distinct flows converge on one address,
+                        default 5; suspected service sink),
+  BITRACER_DECAY_PCT (stop branch outputs below this %% of the case's largest
+                      seed output, default 1; 0 = off),
+  BITRACER_SEED_LABELS (JSON file of known entities to preload:
+                        {"addr": {"label": "...", "kind": "cex|mixer|..."}})
 `)
 }
 
@@ -142,6 +150,13 @@ func openStore(ctx context.Context, cfg config.Config) (*store.Store, error) {
 	}
 	if err := st.Migrate(ctx); err != nil {
 		return nil, fmt.Errorf("migrate: %w", err)
+	}
+	if cfg.SeedLabels != "" {
+		n, err := st.LoadSeedLabelsFile(ctx, cfg.SeedLabels)
+		if err != nil {
+			return nil, fmt.Errorf("seed labels %s: %w", cfg.SeedLabels, err)
+		}
+		slog.Info("seed labels loaded", "file", cfg.SeedLabels, "new", n)
 	}
 	return st, nil
 }

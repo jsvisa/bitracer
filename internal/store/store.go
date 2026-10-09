@@ -139,4 +139,7 @@ var migrateStmts = []string{
 	`CREATE UNIQUE INDEX IF NOT EXISTS uq_case_channels_case_name ON case_channels (case_id, name)`,
 	`ALTER TABLE cases ADD COLUMN IF NOT EXISTS backfill_checkpoint BIGINT NOT NULL DEFAULT 0`,
 	`ALTER TABLE cases ADD COLUMN IF NOT EXISTS backfill_target BIGINT NOT NULL DEFAULT 0`,
+	`ALTER TABLE addresses ADD COLUMN IF NOT EXISTS is_terminal BOOLEAN NOT NULL DEFAULT FALSE`,
+	`ALTER TABLE addresses ADD COLUMN IF NOT EXISTS terminal_kind TEXT NOT NULL DEFAULT ''`,
+	`UPDATE addresses SET is_terminal = TRUE, terminal_kind = 'cex' WHERE is_cex AND NOT is_terminal`,
 }

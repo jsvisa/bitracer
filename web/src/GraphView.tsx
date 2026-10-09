@@ -16,6 +16,7 @@ interface FlowNode {
   value: number
   cex: boolean
   cexName: string
+  terminal: string
   highlighted: boolean
 }
 
@@ -91,7 +92,8 @@ function collapse(data: GraphData): { nodes: FlowNode[]; edges: FlowEdge[] } {
         value: n.value_btc,
         cex: n.cex,
         cexName: n.cex_name || '',
-        highlighted: n.cex || !!n.watched,
+        terminal: n.terminal || '',
+        highlighted: n.cex || !!n.watched || !!n.terminal,
       })
     } else {
       txSeen.add(n.id)
@@ -126,6 +128,7 @@ function collapse(data: GraphData): { nodes: FlowNode[]; edges: FlowEdge[] } {
         value: 0,
         cex: false,
         cexName: '',
+        terminal: '',
         highlighted: data.txids.includes(txid),
       })
       for (const o of outs) {
@@ -140,6 +143,7 @@ function collapse(data: GraphData): { nodes: FlowNode[]; edges: FlowEdge[] } {
         value: 0,
         cex: false,
         cexName: '',
+        terminal: '',
         highlighted: false,
       })
       for (const i of ins) {
@@ -268,6 +272,7 @@ function buildDetail(l: Layout, sel: NonNullable<Sel>): Detail | null {
     ]
     if (n.cexName) rows.push(['entity', n.cexName])
     if (n.cex) rows.push(['cex', 'yes'])
+    if (n.terminal) rows.push(['terminal', n.terminal])
     return {
       title: 'address',
       rows,

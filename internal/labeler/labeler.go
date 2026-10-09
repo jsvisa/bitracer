@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/jsvisa/bitracer/internal/alerts"
@@ -69,7 +70,7 @@ func (s *Service) ResolveAddress(ctx context.Context, addr string) (*labels.Labe
 		return nil, err
 	}
 	if cached != nil {
-		return &labels.Label{Name: cached.Label, Source: cached.Source, IsCEX: cached.IsCEX}, nil
+		return &labels.Label{Name: cached.Label, Source: cached.Source, IsCEX: cached.IsCEX, Kind: cached.TerminalKind}, nil
 	}
 	if s.reg == nil {
 		return nil, nil
@@ -80,47 +81,115 @@ func (s *Service) ResolveAddress(ctx context.Context, addr string) (*labels.Labe
 	}
 	info := store.AddressInfo{Address: addr}
 	if lbl != nil {
-		info = store.AddressInfo{Address: addr, Label: lbl.Name, Source: lbl.Source, IsCEX: lbl.IsCEX}
+		info = store.AddressInfo{
+			Address: addr, Label: lbl.Name, Source: lbl.Source,
+			IsCEX: lbl.IsCEX, IsTerminal: lbl.Kind != "", TerminalKind: lbl.Kind,
+		}
 	}
 	if err := s.st.UpsertAddress(ctx, info); err != nil {
 		return nil, err
 	}
-	if lbl != nil && lbl.IsCEX {
+	if lbl != nil && lbl.Kind != "" {
 		s.markTerminal(ctx, addr, lbl)
 	}
 	return lbl, nil
 }
 
+// TerminalKinds are the kinds accepted by the manual pin endpoint.
+var TerminalKinds = []string{"cex", "mixer", "service", "gambling", "darknet", "manual"}
+
+func ValidTerminalKind(kind string) bool {
+	for _, k := range TerminalKinds {
+		if k == kind {
+			return true
+		}
+	}
+	return false
+}
+
+// PinTerminal marks an address as a stop point by hand (for entities the
+// vendor does not label) and stops any case output already watching it.
+func (s *Service) PinTerminal(ctx context.Context, addr, kind string) error {
+	if kind == "" {
+		kind = "manual"
+	}
+	if !ValidTerminalKind(kind) {
+		return fmt.Errorf("kind must be one of %s", strings.Join(TerminalKinds, ", "))
+	}
+	if err := s.st.SetAddressTerminal(ctx, addr, kind); err != nil {
+		return err
+	}
+	s.markTerminal(ctx, addr, &labels.Label{Name: addr, Kind: kind})
+	return nil
+}
+
+func (s *Service) UnpinTerminal(ctx context.Context, addr string) error {
+	return s.st.ClearAddressTerminal(ctx, addr)
+}
+
 func (s *Service) markTerminal(ctx context.Context, addr string, lbl *labels.Label) {
-	rows, err := s.st.WatchingByAddress(ctx, addr)
+	kind := lbl.Kind
+	if kind == "" {
+		kind = "cex"
+	}
+	entity := lbl.Name
+	if entity == "" {
+		entity = kind
+	}
+	FlipAddressTerminal(ctx, s.st, addr, kind, entity)
+}
+
+// FlipAddressTerminal stops every case still watching outputs at addr and
+// emits one aggregated alert per case. Shared by vendor-label hits, manual
+// pins and the heuristic stops.
+func FlipAddressTerminal(ctx context.Context, st *store.Store, addr, kind, entity string) {
+	rows, err := st.WatchingByAddress(ctx, addr)
 	if err != nil {
 		slog.Error("watching lookup failed", "address", addr, "err", err)
 		return
 	}
+	byCase := map[int64][]store.WatchedRow{}
 	for _, r := range rows {
-		flipped, err := s.st.SetWatchedTerminal(ctx, r.CaseID, r.Txid, r.Vout)
-		if err != nil {
-			slog.Error("terminal flip failed", "case", r.CaseID, "err", err)
-			continue
+		byCase[r.CaseID] = append(byCase[r.CaseID], r)
+	}
+	for caseID, rs := range byCase {
+		var sum int64
+		var depth int32
+		txid := rs[0].Txid
+		flipped := 0
+		for _, r := range rs {
+			ok, err := st.SetWatchedTerminal(ctx, caseID, r.Txid, r.Vout)
+			if err != nil {
+				slog.Error("terminal flip failed", "case", caseID, "err", err)
+				continue
+			}
+			if !ok {
+				continue
+			}
+			flipped++
+			sum += r.ValueSats
+			if r.Depth > depth {
+				depth = r.Depth
+			}
 		}
-		if !flipped {
+		if flipped == 0 {
 			continue
 		}
 		msg := notify.Message{
-			Kind:      "cex",
-			CaseID:    r.CaseID,
-			Headline:  fmt.Sprintf("%.8f BTC reached %s — STOP", btc.SatsToBTC(r.ValueSats), lbl.Name),
-			Entity:    lbl.Name,
-			Txid:      r.Txid,
+			Kind:      kind,
+			CaseID:    caseID,
+			Headline:  fmt.Sprintf("%.8f BTC reached %s — STOP", btc.SatsToBTC(sum), entity),
+			Entity:    entity,
+			Txid:      txid,
 			Address:   addr,
-			ValueSats: r.ValueSats,
-			Depth:     r.Depth,
+			ValueSats: sum,
+			Depth:     depth,
 		}
-		if err := alerts.Emit(ctx, s.st, store.Alert{
-			CaseID: r.CaseID, Txid: r.Txid, Address: addr,
-			ValueSats: r.ValueSats, Depth: r.Depth, Kind: "cex",
+		if err := alerts.Emit(ctx, st, store.Alert{
+			CaseID: caseID, Txid: txid, Address: addr,
+			ValueSats: sum, Depth: depth, Kind: kind,
 		}, msg); err != nil {
-			slog.Error("cex alert failed", "case", r.CaseID, "err", err)
+			slog.Error("terminal alert failed", "case", caseID, "err", err)
 		}
 	}
 }

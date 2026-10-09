@@ -12,6 +12,7 @@ import (
 	"github.com/jsvisa/bitracer/internal/alerts"
 	"github.com/jsvisa/bitracer/internal/btc"
 	"github.com/jsvisa/bitracer/internal/config"
+	"github.com/jsvisa/bitracer/internal/labeler"
 	"github.com/jsvisa/bitracer/internal/notify"
 	"github.com/jsvisa/bitracer/internal/store"
 )
@@ -25,10 +26,11 @@ type ETL struct {
 
 	mu        sync.Mutex
 	backfills map[int64]bool
+	seedSats  map[int64]int64
 }
 
 func New(st *store.Store, rpc *btc.Client, cfg config.Config, startBlock int64, minSats int64) *ETL {
-	return &ETL{st: st, rpc: rpc, cfg: cfg, startBlock: startBlock, minSats: minSats, backfills: map[int64]bool{}}
+	return &ETL{st: st, rpc: rpc, cfg: cfg, startBlock: startBlock, minSats: minSats, backfills: map[int64]bool{}, seedSats: map[int64]int64{}}
 }
 
 func (e *ETL) Run(ctx context.Context) error {
@@ -239,6 +241,11 @@ func (e *ETL) afterSpend(ctx context.Context, m store.WatchedMatch, spenderTxid 
 	if err := e.addWatchedFromTx(ctx, m.CaseID, m.MinSats, m.DepthCap, m.BranchCap, spenderTxid, outs, m.Depth+1, height); err != nil {
 		return err
 	}
+	if e.isFanout(outs) {
+		if err := e.markFanout(ctx, m, spenderTxid); err != nil {
+			return err
+		}
+	}
 	msg := notify.Message{
 		Kind:      kind,
 		CaseID:    m.CaseID,
@@ -267,9 +274,20 @@ func (e *ETL) addWatchedFromTx(ctx context.Context, caseID int64, minSats int64,
 	if n >= int64(branchCap) {
 		return nil
 	}
+	floor := int64(0)
+	if depth > 0 && e.cfg.DecayPct > 0 {
+		seed, err := e.caseSeedSats(ctx, caseID)
+		if err != nil {
+			return err
+		}
+		floor = seed * int64(e.cfg.DecayPct) / 100
+	}
 	rows := make([]store.WatchedRow, 0, len(outs))
 	for _, o := range outs {
 		if o.ValueSats < minSats {
+			continue
+		}
+		if floor > 0 && o.ValueSats < floor {
 			continue
 		}
 		rows = append(rows, store.WatchedRow{
@@ -289,7 +307,116 @@ func (e *ETL) addWatchedFromTx(ctx context.Context, caseID int64, minSats int64,
 			return err
 		}
 	}
+	if e.cfg.FaninCount > 0 {
+		if err := e.checkFanin(ctx, caseID, inserted); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// checkFanin stops addresses that many distinct flows converge on — the
+// signature of an unlabeled service/exchange sink.
+func (e *ETL) checkFanin(ctx context.Context, caseID int64, inserted []store.WatchedRow) error {
+	seen := map[string]bool{}
+	for _, r := range inserted {
+		if r.Address == "" || seen[r.Address] {
+			continue
+		}
+		seen[r.Address] = true
+		if info, err := e.st.GetAddress(ctx, r.Address); err == nil && info != nil && info.IsTerminal {
+			continue
+		}
+		parents, err := e.st.WatchedAddressParentCount(ctx, caseID, r.Address)
+		if err != nil {
+			return err
+		}
+		if parents < int64(e.cfg.FaninCount) {
+			continue
+		}
+		slog.Info("fan-in convergence: stopping address", "case", caseID, "address", r.Address, "flows", parents)
+		if err := e.st.SetAddressTerminal(ctx, r.Address, "fanin"); err != nil {
+			return err
+		}
+		short := r.Address
+		if len(short) > 22 {
+			short = short[:10] + "…" + short[len(short)-6:]
+		}
+		labeler.FlipAddressTerminal(ctx, e.st, r.Address, "fanin",
+			fmt.Sprintf("%s (%d distinct flows)", short, parents))
+	}
+	return nil
+}
+
+// caseSeedSats caches the largest depth-0 output per case for the decay floor.
+func (e *ETL) caseSeedSats(ctx context.Context, caseID int64) (int64, error) {
+	e.mu.Lock()
+	v, ok := e.seedSats[caseID]
+	e.mu.Unlock()
+	if ok {
+		return v, nil
+	}
+	v, err := e.st.CaseSeedSats(ctx, caseID)
+	if err != nil {
+		return 0, err
+	}
+	e.mu.Lock()
+	e.seedSats[caseID] = v
+	e.mu.Unlock()
+	return v, nil
+}
+
+// isFanout reports whether a spender tx's output set looks like a mixer or
+// coinjoin: many outputs sharing one exact denomination, or (opt-in) a very
+// wide address fan-out. Those outflows are mostly unrelated churn, so the
+// walker stops instead of exploding into branches.
+func (e *ETL) isFanout(outs []store.IndexedOut) bool {
+	if len(outs) == 0 || (e.cfg.FanoutDenom <= 0 && e.cfg.FanoutAddrs <= 0) {
+		return false
+	}
+	addrs := map[string]bool{}
+	denoms := map[int64]int{}
+	for _, o := range outs {
+		if o.Address != "" {
+			addrs[o.Address] = true
+		}
+		denoms[o.ValueSats]++
+	}
+	if e.cfg.FanoutAddrs > 0 && len(addrs) >= e.cfg.FanoutAddrs {
+		return true
+	}
+	if e.cfg.FanoutDenom > 0 {
+		for _, n := range denoms {
+			if n >= e.cfg.FanoutDenom {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (e *ETL) markFanout(ctx context.Context, m store.WatchedMatch, spenderTxid string) error {
+	flipped, err := e.st.SetTxTerminal(ctx, m.CaseID, spenderTxid)
+	if err != nil {
+		return err
+	}
+	if flipped == 0 {
+		return nil
+	}
+	msg := notify.Message{
+		Kind:      "fanout",
+		CaseID:    m.CaseID,
+		Headline: fmt.Sprintf("%.8f BTC spent into fan-out tx %s — STOP (suspected mixer/coinjoin payout, not tracked further)",
+			btc.SatsToBTC(m.ValueSats), spenderTxid),
+		Txid:      spenderTxid,
+		Address:   m.Address,
+		ValueSats: m.ValueSats,
+		Depth:     m.Depth + 1,
+	}
+	return alerts.Emit(ctx, e.st, store.Alert{
+		CaseID: m.CaseID, Txid: spenderTxid, Address: m.Address,
+		ValueSats: m.ValueSats, Depth: m.Depth + 1, Kind: "fanout",
+	}, msg)
 }
 
 func (e *ETL) checkTerminal(ctx context.Context, caseID int64, txid string, vout int32, addr string, sats int64, depth int32) error {
@@ -300,7 +427,7 @@ func (e *ETL) checkTerminal(ctx context.Context, caseID int64, txid string, vout
 	if err != nil {
 		return err
 	}
-	if info == nil || !info.IsCEX {
+	if info == nil || !info.IsTerminal {
 		return nil
 	}
 	flipped, err := e.st.SetWatchedTerminal(ctx, caseID, txid, vout)
@@ -310,12 +437,16 @@ func (e *ETL) checkTerminal(ctx context.Context, caseID int64, txid string, vout
 	if !flipped {
 		return nil
 	}
+	kind := info.TerminalKind
+	if kind == "" {
+		kind = "cex"
+	}
 	name := info.Label
 	if name == "" {
-		name = "labeled entity"
+		name = kind
 	}
 	msg := notify.Message{
-		Kind:      "cex",
+		Kind:      kind,
 		CaseID:    caseID,
 		Headline: fmt.Sprintf("%.8f BTC reached %s — STOP", btc.SatsToBTC(sats), name),
 		Entity:   name,
@@ -326,7 +457,7 @@ func (e *ETL) checkTerminal(ctx context.Context, caseID int64, txid string, vout
 	}
 	return alerts.Emit(ctx, e.st, store.Alert{
 		CaseID: caseID, Txid: txid, Address: addr,
-		ValueSats: sats, Depth: depth, Kind: "cex",
+		ValueSats: sats, Depth: depth, Kind: kind,
 	}, msg)
 }
 

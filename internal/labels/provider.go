@@ -9,6 +9,7 @@ type Label struct {
 	Name   string
 	Source string
 	IsCEX  bool
+	Kind   string
 }
 
 type Provider interface {

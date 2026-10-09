@@ -175,6 +175,17 @@ func kindLabel(m Message) string {
 	}
 }
 
+// IsTerminalKind reports whether the kind means tracking stopped at a known
+// entity (exchange, mixer, service, ...) — rendered green, unlike plain
+// movement alerts.
+func IsTerminalKind(kind string) bool {
+	switch kind {
+	case "cex", "mixer", "gambling", "darknet", "service", "manual", "test":
+		return true
+	}
+	return false
+}
+
 // Slack renders Block Kit: colored-attachment style with mrkdwn fields
 // and a mempool.space link on the txhash. channel overrides the webhook's
 // bound channel (supported by legacy incoming webhooks).
@@ -204,7 +215,7 @@ func (s *Slack) Send(ctx context.Context, msg Message) error {
 		headline = msg.Plain()
 	}
 	color := "#bf616a"
-	if msg.Kind == "cex" || msg.Kind == "test" {
+	if IsTerminalKind(msg.Kind) {
 		color = "#a3be8c"
 	}
 	payload := map[string]any{
@@ -277,7 +288,7 @@ func (l *Lark) Send(ctx context.Context, msg Message) error {
 		fmt.Fprintf(&b, "- **tx:** [%s](%s)\n", shortTx(msg.Txid), ExplorerTxURL(msg.Txid))
 	}
 	template := "red"
-	if msg.Kind == "cex" || msg.Kind == "test" {
+	if IsTerminalKind(msg.Kind) {
 		template = "green"
 	}
 	payload := map[string]any{
