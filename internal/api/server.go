@@ -45,6 +45,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/graph", s.graph)
 	mux.HandleFunc("GET /api/label", s.lookupLabel)
 	mux.HandleFunc("POST /api/cases/{id}/resolve-labels", s.resolveCaseLabels)
+	mux.HandleFunc("POST /api/addresses/{address}/terminal", s.pinTerminal)
+	mux.HandleFunc("DELETE /api/addresses/{address}/terminal", s.unpinTerminal)
 	return mux
 }
 

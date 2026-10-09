@@ -1,10 +1,15 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
+	"github.com/jsvisa/bitracer/internal/labeler"
 	"github.com/jsvisa/bitracer/internal/labels"
 )
 
@@ -40,4 +45,46 @@ func (s *Server) resolveCaseLabels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "resolved"})
+}
+
+func (s *Server) pinTerminal(w http.ResponseWriter, r *http.Request) {
+	addr := r.PathValue("address")
+	if addr == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("address required"))
+		return
+	}
+	var b struct {
+		Kind string `json:"kind"`
+	}
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&b); err != nil && !errors.Is(err, io.EOF) {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+	}
+	if b.Kind == "" {
+		b.Kind = "manual"
+	}
+	if !labeler.ValidTerminalKind(b.Kind) {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("kind must be one of %s", strings.Join(labeler.TerminalKinds, ", ")))
+		return
+	}
+	if err := s.lbl.PinTerminal(r.Context(), addr, b.Kind); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"pinned": addr, "kind": b.Kind})
+}
+
+func (s *Server) unpinTerminal(w http.ResponseWriter, r *http.Request) {
+	addr := r.PathValue("address")
+	if addr == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("address required"))
+		return
+	}
+	if err := s.lbl.UnpinTerminal(r.Context(), addr); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"unpinned": addr})
 }

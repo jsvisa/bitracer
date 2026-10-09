@@ -51,6 +51,7 @@ export interface GraphNode {
   value_btc: number
   cex: boolean
   cex_name?: string
+  terminal?: string
   watched?: boolean
 }
 

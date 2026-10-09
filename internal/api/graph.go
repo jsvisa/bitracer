@@ -14,13 +14,14 @@ import (
 )
 
 type graphNode struct {
-	ID      string  `json:"id"`
-	Type    string  `json:"type"`
-	Label   string  `json:"label"`
-	Value   float64 `json:"value_btc"`
-	Watched bool    `json:"watched"`
-	CEX     bool    `json:"cex"`
-	CexName string  `json:"cex_name,omitempty"`
+	ID       string  `json:"id"`
+	Type     string  `json:"type"`
+	Label    string  `json:"label"`
+	Value    float64 `json:"value_btc"`
+	Watched  bool    `json:"watched"`
+	CEX      bool    `json:"cex"`
+	CexName  string  `json:"cex_name,omitempty"`
+	Terminal string  `json:"terminal,omitempty"`
 }
 
 type graphEdge struct {
@@ -269,9 +270,19 @@ func (s *Server) markCEX(ctx context.Context, nodes map[string]*graphNode) error
 			continue
 		}
 		addr := strings.TrimPrefix(id, "a:")
-		if info, err := s.st.GetAddress(ctx, addr); err == nil && info != nil && info.IsCEX {
+		info, err := s.st.GetAddress(ctx, addr)
+		if err != nil || info == nil {
+			continue
+		}
+		if info.IsCEX {
 			n.CEX = true
 			n.CexName = info.Label
+		}
+		if info.IsTerminal {
+			n.Terminal = info.TerminalKind
+			if n.CexName == "" {
+				n.CexName = info.Label
+			}
 		}
 	}
 	return nil
