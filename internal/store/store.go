@@ -136,4 +136,6 @@ var migrateStmts = []string{
 	`ALTER TABLE case_channels ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT ''`,
 	`UPDATE case_channels SET name = type || '-' || id WHERE name = ''`,
 	`CREATE UNIQUE INDEX IF NOT EXISTS uq_case_channels_case_name ON case_channels (case_id, name)`,
+	`ALTER TABLE cases ADD COLUMN IF NOT EXISTS backfill_checkpoint BIGINT NOT NULL DEFAULT 0`,
+	`ALTER TABLE cases ADD COLUMN IF NOT EXISTS backfill_target BIGINT NOT NULL DEFAULT 0`,
 }
