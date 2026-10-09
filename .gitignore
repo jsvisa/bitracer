@@ -1,0 +1,11 @@
+/bitracer
+/bin/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+.env
+.worktrees/
+node_modules/
+web/dist/
+.DS_Store
