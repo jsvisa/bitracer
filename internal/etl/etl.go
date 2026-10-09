@@ -239,6 +239,11 @@ func (e *ETL) afterSpend(ctx context.Context, m store.WatchedMatch, spenderTxid 
 	if err := e.addWatchedFromTx(ctx, m.CaseID, m.MinSats, m.DepthCap, m.BranchCap, spenderTxid, outs, m.Depth+1, height); err != nil {
 		return err
 	}
+	if e.isFanout(outs) {
+		if err := e.markFanout(ctx, m, spenderTxid); err != nil {
+			return err
+		}
+	}
 	msg := notify.Message{
 		Kind:      kind,
 		CaseID:    m.CaseID,
@@ -292,6 +297,59 @@ func (e *ETL) addWatchedFromTx(ctx context.Context, caseID int64, minSats int64,
 	return nil
 }
 
+// isFanout reports whether a spender tx's output set looks like a mixer or
+// coinjoin: many outputs sharing one exact denomination, or (opt-in) a very
+// wide address fan-out. Those outflows are mostly unrelated churn, so the
+// walker stops instead of exploding into branches.
+func (e *ETL) isFanout(outs []store.IndexedOut) bool {
+	if len(outs) == 0 || (e.cfg.FanoutDenom <= 0 && e.cfg.FanoutAddrs <= 0) {
+		return false
+	}
+	addrs := map[string]bool{}
+	denoms := map[int64]int{}
+	for _, o := range outs {
+		if o.Address != "" {
+			addrs[o.Address] = true
+		}
+		denoms[o.ValueSats]++
+	}
+	if e.cfg.FanoutAddrs > 0 && len(addrs) >= e.cfg.FanoutAddrs {
+		return true
+	}
+	if e.cfg.FanoutDenom > 0 {
+		for _, n := range denoms {
+			if n >= e.cfg.FanoutDenom {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (e *ETL) markFanout(ctx context.Context, m store.WatchedMatch, spenderTxid string) error {
+	flipped, err := e.st.SetTxTerminal(ctx, m.CaseID, spenderTxid)
+	if err != nil {
+		return err
+	}
+	if flipped == 0 {
+		return nil
+	}
+	msg := notify.Message{
+		Kind:      "fanout",
+		CaseID:    m.CaseID,
+		Headline: fmt.Sprintf("%.8f BTC spent into fan-out tx %s — STOP (suspected mixer/coinjoin payout, not tracked further)",
+			btc.SatsToBTC(m.ValueSats), spenderTxid),
+		Txid:      spenderTxid,
+		Address:   m.Address,
+		ValueSats: m.ValueSats,
+		Depth:     m.Depth + 1,
+	}
+	return alerts.Emit(ctx, e.st, store.Alert{
+		CaseID: m.CaseID, Txid: spenderTxid, Address: m.Address,
+		ValueSats: m.ValueSats, Depth: m.Depth + 1, Kind: "fanout",
+	}, msg)
+}
+
 func (e *ETL) checkTerminal(ctx context.Context, caseID int64, txid string, vout int32, addr string, sats int64, depth int32) error {
 	if addr == "" {
 		return nil
@@ -300,7 +358,7 @@ func (e *ETL) checkTerminal(ctx context.Context, caseID int64, txid string, vout
 	if err != nil {
 		return err
 	}
-	if info == nil || !info.IsCEX {
+	if info == nil || !info.IsTerminal {
 		return nil
 	}
 	flipped, err := e.st.SetWatchedTerminal(ctx, caseID, txid, vout)
@@ -310,12 +368,16 @@ func (e *ETL) checkTerminal(ctx context.Context, caseID int64, txid string, vout
 	if !flipped {
 		return nil
 	}
+	kind := info.TerminalKind
+	if kind == "" {
+		kind = "cex"
+	}
 	name := info.Label
 	if name == "" {
-		name = "labeled entity"
+		name = kind
 	}
 	msg := notify.Message{
-		Kind:      "cex",
+		Kind:      kind,
 		CaseID:    caseID,
 		Headline: fmt.Sprintf("%.8f BTC reached %s — STOP", btc.SatsToBTC(sats), name),
 		Entity:   name,
@@ -326,7 +388,7 @@ func (e *ETL) checkTerminal(ctx context.Context, caseID int64, txid string, vout
 	}
 	return alerts.Emit(ctx, e.st, store.Alert{
 		CaseID: caseID, Txid: txid, Address: addr,
-		ValueSats: sats, Depth: depth, Kind: "cex",
+		ValueSats: sats, Depth: depth, Kind: kind,
 	}, msg)
 }
 

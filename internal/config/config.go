@@ -20,6 +20,8 @@ type Config struct {
 	BlocksecLabelChainID int
 	LabelInterval        time.Duration
 	SyncInterval         time.Duration
+	FanoutAddrs          int
+	FanoutDenom          int
 }
 
 func Load() Config {
@@ -35,6 +37,8 @@ func Load() Config {
 		BlocksecLabelChainID: int(envInt("BLOCKSEC_LABEL_CHAIN_ID", labels.BitcoinChainID)),
 		LabelInterval:        envSec("BITRACER_LABEL_INTERVAL", 60),
 		SyncInterval:         envSec("BITRACER_SYNC_INTERVAL", 15),
+		FanoutDenom:          int(envInt("BITRACER_FANOUT_DENOM", 5)),
+		FanoutAddrs:          int(envInt("BITRACER_FANOUT_ADDRS", 0)),
 	}
 }
 
