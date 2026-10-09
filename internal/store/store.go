@@ -87,6 +87,7 @@ var migrateStmts = []string{
 	`CREATE TABLE IF NOT EXISTS case_channels (
 			id BIGSERIAL PRIMARY KEY,
 			case_id BIGINT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+			name TEXT NOT NULL DEFAULT '',
 			type TEXT NOT NULL,
 			config JSONB NOT NULL,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -132,4 +133,7 @@ var migrateStmts = []string{
 		)`,
 	`ALTER TABLE sync_state ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now()`,
 	`INSERT INTO sync_state (id) VALUES (1) ON CONFLICT DO NOTHING`,
+	`ALTER TABLE case_channels ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT ''`,
+	`UPDATE case_channels SET name = type || '-' || id WHERE name = ''`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS uq_case_channels_case_name ON case_channels (case_id, name)`,
 }
