@@ -6,6 +6,8 @@ export interface Case {
   branch_cap: number
   status: string
   created_at: string
+  backfill_checkpoint: number
+  backfill_target: number
 }
 
 export interface CaseTx {

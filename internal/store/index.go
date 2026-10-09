@@ -51,6 +51,13 @@ func (s *Store) LastHeight(ctx context.Context) (int64, error) {
 	return h, err
 }
 
+// MinBlockHeight is the earliest indexed block (0 when nothing indexed yet).
+func (s *Store) MinBlockHeight(ctx context.Context) (int64, error) {
+	var h int64
+	err := s.pool.QueryRow(ctx, `SELECT COALESCE(MIN(height), 0) FROM blocks`).Scan(&h)
+	return h, err
+}
+
 func (s *Store) SetLastHeight(ctx context.Context, height int64) error {
 	_, err := s.pool.Exec(ctx, `UPDATE sync_state SET last_height = $1, updated_at = now() WHERE id = 1`, height)
 	return err

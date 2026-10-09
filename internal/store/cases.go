@@ -11,13 +11,15 @@ import (
 )
 
 type Case struct {
-	ID        int64     `json:"id"`
-	Name      string    `json:"name"`
-	MinSats   *int64    `json:"min_sats"`
-	DepthCap  int32     `json:"depth_cap"`
-	BranchCap int32     `json:"branch_cap"`
-	Status    string    `json:"status"`
-	CreatedAt time.Time `json:"created_at"`
+	ID                 int64     `json:"id"`
+	Name               string    `json:"name"`
+	MinSats            *int64    `json:"min_sats"`
+	DepthCap           int32     `json:"depth_cap"`
+	BranchCap          int32     `json:"branch_cap"`
+	Status             string    `json:"status"`
+	CreatedAt          time.Time `json:"created_at"`
+	BackfillCheckpoint int64     `json:"backfill_checkpoint"`
+	BackfillTarget     int64     `json:"backfill_target"`
 }
 
 type CaseTx struct {
@@ -40,16 +42,17 @@ func (s *Store) CreateCase(ctx context.Context, name string, minSats *int64, dep
 	var c Case
 	err := s.pool.QueryRow(ctx,
 		`INSERT INTO cases (name, min_sats, depth_cap, branch_cap) VALUES ($1, $2, $3, $4)
-		 RETURNING id, name, min_sats, depth_cap, branch_cap, status, created_at`,
-		name, minSats, depthCap, branchCap).Scan(&c.ID, &c.Name, &c.MinSats, &c.DepthCap, &c.BranchCap, &c.Status, &c.CreatedAt)
+		 RETURNING id, name, min_sats, depth_cap, branch_cap, status, created_at, backfill_checkpoint, backfill_target`,
+		name, minSats, depthCap, branchCap).
+		Scan(&c.ID, &c.Name, &c.MinSats, &c.DepthCap, &c.BranchCap, &c.Status, &c.CreatedAt, &c.BackfillCheckpoint, &c.BackfillTarget)
 	return c, err
 }
 
-const caseCols = `id, name, min_sats, depth_cap, branch_cap, status, created_at`
+const caseCols = `id, name, min_sats, depth_cap, branch_cap, status, created_at, backfill_checkpoint, backfill_target`
 
 func scanCase(row pgx.Row) (Case, error) {
 	var c Case
-	err := row.Scan(&c.ID, &c.Name, &c.MinSats, &c.DepthCap, &c.BranchCap, &c.Status, &c.CreatedAt)
+	err := row.Scan(&c.ID, &c.Name, &c.MinSats, &c.DepthCap, &c.BranchCap, &c.Status, &c.CreatedAt, &c.BackfillCheckpoint, &c.BackfillTarget)
 	return c, err
 }
 
@@ -195,4 +198,76 @@ func (s *Store) ListChannels(ctx context.Context, caseID int64) ([]Channel, erro
 func (s *Store) DeleteChannel(ctx context.Context, id int64) error {
 	_, err := s.pool.Exec(ctx, `DELETE FROM case_channels WHERE id = $1`, id)
 	return err
+}
+
+// SetCaseBackfill registers a gap backfill for the case: checkpoint is the next
+// height to process, target is the exclusive upper bound (the db's first block
+// at detection time). If a backfill is already in flight the range is extended:
+// the checkpoint moves down and the target moves up.
+func (s *Store) SetCaseBackfill(ctx context.Context, caseID, checkpoint, target int64) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE cases SET
+			 backfill_checkpoint = CASE WHEN backfill_target > 0 AND backfill_checkpoint > 0 AND backfill_checkpoint < backfill_target
+			                            THEN LEAST(backfill_checkpoint, $2) ELSE $2 END,
+			 backfill_target = GREATEST(backfill_target, $3)
+		 WHERE id = $1 AND status = 'active'`, caseID, checkpoint, target)
+	return err
+}
+
+// AdvanceCaseBackfill persists progress after a gap block has been indexed.
+func (s *Store) AdvanceCaseBackfill(ctx context.Context, caseID, checkpoint int64) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE cases SET backfill_checkpoint = $2 WHERE id = $1 AND backfill_target > 0`, caseID, checkpoint)
+	return err
+}
+
+// ClearCaseBackfill marks the backfill as finished.
+func (s *Store) ClearCaseBackfill(ctx context.Context, caseID int64) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE cases SET backfill_checkpoint = 0, backfill_target = 0 WHERE id = $1`, caseID)
+	return err
+}
+
+type CaseBackfill struct {
+	CaseID     int64
+	Checkpoint int64
+	Target     int64
+}
+
+// CaseBackfill returns the current backfill checkpoint for an active case
+// (ErrNotFound when the case is missing, paused, or finished).
+func (s *Store) CaseBackfill(ctx context.Context, caseID int64) (*CaseBackfill, error) {
+	var b CaseBackfill
+	err := s.pool.QueryRow(ctx,
+		`SELECT id, backfill_checkpoint, backfill_target FROM cases WHERE id = $1 AND status = 'active'`, caseID).
+		Scan(&b.CaseID, &b.Checkpoint, &b.Target)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &b, nil
+}
+
+// PendingCaseBackfills lists active cases with an unfinished backfill, so the
+// worker can (re)spawn goroutines after a restart or crash.
+func (s *Store) PendingCaseBackfills(ctx context.Context) ([]CaseBackfill, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, backfill_checkpoint, backfill_target FROM cases
+		 WHERE status = 'active' AND backfill_target > 0 AND backfill_checkpoint > 0 AND backfill_checkpoint < backfill_target
+		 ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []CaseBackfill
+	for rows.Next() {
+		var b CaseBackfill
+		if err := rows.Scan(&b.CaseID, &b.Checkpoint, &b.Target); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
 }

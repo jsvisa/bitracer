@@ -154,6 +154,12 @@ main {
   background: #e5484d;
 }
 
+.badge.backfill {
+  background: #ebcb8b;
+  color: #2e3440;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+}
+
 .detail {
   display: flex;
   flex-direction: column;

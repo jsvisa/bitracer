@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/jsvisa/bitracer/internal/alerts"
@@ -21,10 +22,13 @@ type ETL struct {
 	cfg        config.Config
 	startBlock int64
 	minSats    int64
+
+	mu        sync.Mutex
+	backfills map[int64]bool
 }
 
 func New(st *store.Store, rpc *btc.Client, cfg config.Config, startBlock int64, minSats int64) *ETL {
-	return &ETL{st: st, rpc: rpc, cfg: cfg, startBlock: startBlock, minSats: minSats}
+	return &ETL{st: st, rpc: rpc, cfg: cfg, startBlock: startBlock, minSats: minSats, backfills: map[int64]bool{}}
 }
 
 func (e *ETL) Run(ctx context.Context) error {
@@ -44,6 +48,9 @@ func (e *ETL) Run(ctx context.Context) error {
 	if err := e.SyncBlocks(ctx); err != nil {
 		slog.Error("initial sync failed", "err", err)
 	}
+	if err := e.ResumeBackfills(ctx); err != nil {
+		slog.Error("backfill resume failed", "err", err)
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -55,6 +62,9 @@ func (e *ETL) Run(ctx context.Context) error {
 		case <-seedTick.C:
 			if err := e.SeedPendingCases(ctx); err != nil {
 				slog.Error("case seeding failed", "err", err)
+			}
+			if err := e.ResumeBackfills(ctx); err != nil {
+				slog.Error("backfill resume failed", "err", err)
 			}
 		}
 	}
@@ -367,11 +377,116 @@ func (e *ETL) SeedPendingCases(ctx context.Context) error {
 			return err
 		}
 		slog.Info("seeded case tx", "case", seed.CaseID, "txid", seed.Txid, "outputs", len(outs))
+		if err := e.seedGapBackfill(ctx, seed.CaseID, height); err != nil {
+			return err
+		}
 		if err := e.catchUpCase(ctx, seed.CaseID, seed.MinSats, seed.DepthCap, seed.BranchCap); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// seedGapBackfill checks whether a freshly seeded tx predates the db's first
+// indexed block; if so it persists a case checkpoint and spawns a goroutine
+// that backfills the ETL for the gap so spends before the indexed range are
+// still traced.
+func (e *ETL) seedGapBackfill(ctx context.Context, caseID, height int64) error {
+	if height <= 0 {
+		return nil
+	}
+	first, err := e.st.MinBlockHeight(ctx)
+	if err != nil {
+		return err
+	}
+	if first <= 0 || height >= first {
+		return nil
+	}
+	if err := e.st.SetCaseBackfill(ctx, caseID, height, first); err != nil {
+		return err
+	}
+	slog.Warn("case seed predates first indexed block, backfilling gap",
+		"case", caseID, "from", height, "to", first)
+	e.spawnBackfill(ctx, caseID)
+	return nil
+}
+
+// ResumeBackfills respawns workers for cases whose persisted checkpoint is
+// still behind their target (after a restart or a worker error).
+func (e *ETL) ResumeBackfills(ctx context.Context) error {
+	pending, err := e.st.PendingCaseBackfills(ctx)
+	if err != nil {
+		return err
+	}
+	for _, b := range pending {
+		e.spawnBackfill(ctx, b.CaseID)
+	}
+	return nil
+}
+
+func (e *ETL) spawnBackfill(ctx context.Context, caseID int64) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.backfills[caseID] {
+		return
+	}
+	e.backfills[caseID] = true
+	go e.runBackfill(ctx, caseID)
+}
+
+// runBackfill indexes the case's gap blocks [checkpoint, target) block by
+// block. It never touches sync_state.last_height — that cursor tracks the
+// forward sync tip, and the gap sits entirely below it.
+func (e *ETL) runBackfill(ctx context.Context, caseID int64) {
+	defer func() {
+		e.mu.Lock()
+		delete(e.backfills, caseID)
+		e.mu.Unlock()
+	}()
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		b, err := e.st.CaseBackfill(ctx, caseID)
+		if err != nil {
+			if !errors.Is(err, store.ErrNotFound) {
+				slog.Error("backfill: read checkpoint failed", "case", caseID, "err", err)
+			}
+			return
+		}
+		if b.Checkpoint < 1 || b.Checkpoint >= b.Target {
+			if b.Target > 0 && b.Checkpoint >= b.Target {
+				if err := e.st.ClearCaseBackfill(ctx, caseID); err != nil {
+					slog.Error("backfill: clear checkpoint failed", "case", caseID, "err", err)
+				}
+				slog.Info("backfill complete", "case", caseID, "through", b.Target-1)
+			}
+			return
+		}
+		h := b.Checkpoint
+		hash, err := e.rpc.BlockHash(ctx, h)
+		if err != nil {
+			slog.Error("backfill: block hash failed", "case", caseID, "height", h, "err", err)
+			return
+		}
+		if stored, err := e.st.BlockHash(ctx, h); err == nil && stored != "" && stored != hash {
+			// A reorg under the forward-sync range: never ResetFromHeight here —
+			// that would wipe the indexed range above the gap. Overwrite instead;
+			// all block inserts are idempotent upserts.
+			slog.Warn("backfill: stored hash mismatch, overwriting", "case", caseID, "height", h)
+		}
+		if err := e.processBlock(ctx, h, hash); err != nil {
+			slog.Error("backfill: block failed", "case", caseID, "height", h, "err", err)
+			return
+		}
+		if err := e.st.AdvanceCaseBackfill(ctx, caseID, h+1); err != nil {
+			slog.Error("backfill: advance checkpoint failed", "case", caseID, "height", h, "err", err)
+			return
+		}
+		if h%100 == 0 {
+			slog.Info("backfill progress", "case", caseID, "height", h, "target", b.Target)
+		}
+	}
 }
 
 func (e *ETL) catchUpCase(ctx context.Context, caseID int64, minSats int64, depthCap, branchCap int32) error {

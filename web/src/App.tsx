@@ -14,6 +14,11 @@ export function App() {
     refreshCases().catch((e) => console.error(e))
   }, [refreshCases])
 
+  useEffect(() => {
+    const t = setInterval(() => refreshCases().catch(() => {}), 15000)
+    return () => clearInterval(t)
+  }, [refreshCases])
+
   return (
     <div className="app">
       <header>
@@ -32,6 +37,14 @@ export function App() {
                 onClick={() => setSelected(c.id)}
               >
                 <span className="case-name">#{c.id} {c.name}</span>
+                {c.backfill_target > 0 && c.backfill_checkpoint > 0 && c.backfill_checkpoint < c.backfill_target && (
+                  <span
+                    className="badge backfill"
+                    title={`backfill checkpoint ${c.backfill_checkpoint.toLocaleString()} → target ${c.backfill_target.toLocaleString()}`}
+                  >
+                    backfill {Math.min(99, Math.floor((c.backfill_checkpoint / c.backfill_target) * 100))}%
+                  </span>
+                )}
                 <span className={`badge ${c.status}`}>{c.status}</span>
               </li>
             ))}
