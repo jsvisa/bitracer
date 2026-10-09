@@ -34,6 +34,12 @@ func linkTx(txid string) string {
 	return "<" + ExplorerTxURL(txid) + "|" + shortLabel(txid) + ">"
 }
 
+// Holding is one address's share of the case's parked funds.
+type Holding struct {
+	Address string
+	Sats    int64
+}
+
 type Message struct {
 	Kind      string
 	CaseID    int64
@@ -44,6 +50,9 @@ type Message struct {
 	ValueSats int64
 	Depth     int32
 	Height    string
+	// Parking is where the tracked funds sit at alert time, sorted by
+	// amount desc. Optional; renderers show it as a summary line.
+	Parking []Holding
 }
 
 func TestMessage() Message {
@@ -53,6 +62,28 @@ func TestMessage() Message {
 // Plain renders the flat one-liner stored in the alerts table.
 func (m Message) Plain() string {
 	return fmt.Sprintf("[bitracer] case#%d: %s", m.CaseID, m.Headline)
+}
+
+// parkingLine summarizes where the funds are parked: total plus the top
+// few addresses, e.g. "1.80 BTC total — 0.90 at <addr>, 0.60 at <addr>, +2 more".
+func (m Message) parkingLine() string {
+	if len(m.Parking) == 0 {
+		return ""
+	}
+	var total int64
+	for _, h := range m.Parking {
+		total += h.Sats
+	}
+	const maxAddrs = 3
+	parts := make([]string, 0, maxAddrs+1)
+	for i, h := range m.Parking {
+		if i == maxAddrs {
+			parts = append(parts, fmt.Sprintf("+%d more", len(m.Parking)-maxAddrs))
+			break
+		}
+		parts = append(parts, fmt.Sprintf("%.2f at %s", btc.SatsToBTC(h.Sats), h.Address))
+	}
+	return fmt.Sprintf("%.2f BTC total — %s", btc.SatsToBTC(total), strings.Join(parts, ", "))
 }
 
 // fields returns the labeled detail rows shared by the pretty renderers.
@@ -65,7 +96,7 @@ func (m Message) fields() [][2]string {
 	}
 	add("case", fmt.Sprintf("#%d", m.CaseID))
 	if m.ValueSats > 0 {
-		add("value", fmt.Sprintf("%.8f BTC", btc.SatsToBTC(m.ValueSats)))
+		add("value", fmt.Sprintf("%.2f BTC", btc.SatsToBTC(m.ValueSats)))
 	}
 	if m.Entity != "" {
 		add("entity", m.Entity)
@@ -79,6 +110,7 @@ func (m Message) fields() [][2]string {
 	if m.Height != "" {
 		add("status", m.Height)
 	}
+	add("parking", m.parkingLine())
 	return f
 }
 
