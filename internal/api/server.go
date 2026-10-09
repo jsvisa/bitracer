@@ -1,0 +1,340 @@
+package api
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strconv"
+	"strings"
+
+	"github.com/jsvisa/bitracer/internal/btc"
+	"github.com/jsvisa/bitracer/internal/store"
+)
+
+type Server struct {
+	st  *store.Store
+	rpc *btc.Client
+}
+
+func New(st *store.Store, rpc *btc.Client) *Server {
+	return &Server{st: st, rpc: rpc}
+}
+
+func (s *Server) Handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/health", s.health)
+	mux.HandleFunc("GET /api/cases", s.listCases)
+	mux.HandleFunc("POST /api/cases", s.createCase)
+	mux.HandleFunc("GET /api/cases/{id}", s.getCase)
+	mux.HandleFunc("PATCH /api/cases/{id}", s.patchCase)
+	mux.HandleFunc("DELETE /api/cases/{id}", s.deleteCase)
+	mux.HandleFunc("GET /api/cases/{id}/txs", s.listCaseTxs)
+	mux.HandleFunc("POST /api/cases/{id}/txs", s.addCaseTx)
+	mux.HandleFunc("DELETE /api/cases/{id}/txs/{txid}", s.deleteCaseTx)
+	mux.HandleFunc("GET /api/cases/{id}/channels", s.listChannels)
+	mux.HandleFunc("POST /api/cases/{id}/channels", s.addChannel)
+	mux.HandleFunc("DELETE /api/channels/{id}", s.deleteChannel)
+	mux.HandleFunc("GET /api/alerts", s.listAlerts)
+	mux.HandleFunc("GET /api/graph", s.graph)
+	return mux
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+func writeErr(w http.ResponseWriter, status int, err error) {
+	writeJSON(w, status, map[string]string{"error": err.Error()})
+}
+
+func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+type caseBody struct {
+	Name      string   `json:"name"`
+	Status    string   `json:"status"`
+	MinBTC    *float64 `json:"min_btc"`
+	DepthCap  *int32   `json:"depth_cap"`
+	BranchCap *int32   `json:"branch_cap"`
+}
+
+func (s *Server) createCase(w http.ResponseWriter, r *http.Request) {
+	var b caseBody
+	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if strings.TrimSpace(b.Name) == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("name required"))
+		return
+	}
+	var minSats *int64
+	if b.MinBTC != nil && *b.MinBTC > 0 {
+		v := int64(*b.MinBTC * 1e8)
+		minSats = &v
+	}
+	depthCap, branchCap := int32(50), int32(500)
+	if b.DepthCap != nil && *b.DepthCap > 0 {
+		depthCap = *b.DepthCap
+	}
+	if b.BranchCap != nil && *b.BranchCap > 0 {
+		branchCap = *b.BranchCap
+	}
+	c, err := s.st.CreateCase(r.Context(), b.Name, minSats, depthCap, branchCap)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, c)
+}
+
+func (s *Server) listCases(w http.ResponseWriter, r *http.Request) {
+	cases, err := s.st.ListCases(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if cases == nil {
+		cases = []store.Case{}
+	}
+	writeJSON(w, http.StatusOK, cases)
+}
+
+func (s *Server) getCase(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	c, err := s.st.GetCase(r.Context(), id)
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, c)
+}
+
+func (s *Server) patchCase(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	var b caseBody
+	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if b.Status != "" {
+		if b.Status != "active" && b.Status != "paused" {
+			writeErr(w, http.StatusBadRequest, errors.New("status must be active or paused"))
+			return
+		}
+		if err := s.st.SetCaseStatus(r.Context(), id, b.Status); err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		return
+	}
+	c, err := s.st.GetCase(r.Context(), id)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	name := c.Name
+	if b.Name != "" {
+		name = b.Name
+	}
+	minSats := c.MinSats
+	if b.MinBTC != nil {
+		if *b.MinBTC <= 0 {
+			minSats = nil
+		} else {
+			v := int64(*b.MinBTC * 1e8)
+			minSats = &v
+		}
+	}
+	depthCap, branchCap := c.DepthCap, c.BranchCap
+	if b.DepthCap != nil && *b.DepthCap > 0 {
+		depthCap = *b.DepthCap
+	}
+	if b.BranchCap != nil && *b.BranchCap > 0 {
+		branchCap = *b.BranchCap
+	}
+	if err := s.st.UpdateCase(r.Context(), id, name, minSats, depthCap, branchCap); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"updated": strconv.FormatInt(id, 10)})
+}
+
+func (s *Server) deleteCase(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.st.DeleteCase(r.Context(), id); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"deleted": strconv.FormatInt(id, 10)})
+}
+
+func (s *Server) listCaseTxs(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	txs, err := s.st.ListCaseTxs(r.Context(), id)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if txs == nil {
+		txs = []store.CaseTx{}
+	}
+	writeJSON(w, http.StatusOK, txs)
+}
+
+func (s *Server) addCaseTx(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	var b struct {
+		Txid string `json:"txid"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if !isTxid(b.Txid) {
+		writeErr(w, http.StatusBadRequest, errors.New("txid must be 64 hex chars"))
+		return
+	}
+	if _, err := s.st.GetCase(r.Context(), id); err != nil {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	if err := s.st.AddCaseTx(r.Context(), id, strings.ToLower(b.Txid)); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]string{"added": b.Txid})
+}
+
+func (s *Server) deleteCaseTx(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.st.DeleteCaseTx(r.Context(), id, r.PathValue("txid")); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"deleted": r.PathValue("txid")})
+}
+
+func (s *Server) listChannels(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	chs, err := s.st.ListChannels(r.Context(), id)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if chs == nil {
+		chs = []store.Channel{}
+	}
+	writeJSON(w, http.StatusOK, chs)
+}
+
+func (s *Server) addChannel(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	var b struct {
+		Type   string          `json:"type"`
+		Config json.RawMessage `json:"config"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if _, err := validateChannel(b.Type, b.Config); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	ch, err := s.st.AddChannel(r.Context(), id, b.Type, b.Config)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, ch)
+}
+
+func (s *Server) deleteChannel(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.st.DeleteChannel(r.Context(), id); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"deleted": strconv.FormatInt(id, 10)})
+}
+
+func (s *Server) listAlerts(w http.ResponseWriter, r *http.Request) {
+	limit := 100
+	if l, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && l > 0 && l <= 1000 {
+		limit = l
+	}
+	caseID, _ := strconv.ParseInt(r.URL.Query().Get("case_id"), 10, 64)
+	alerts, err := s.st.ListAlerts(r.Context(), caseID, limit)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if alerts == nil {
+		alerts = []store.Alert{}
+	}
+	writeJSON(w, http.StatusOK, alerts)
+}
+
+func isTxid(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') {
+			return false
+		}
+	}
+	return true
+}
+
+func validateChannel(typ string, cfg json.RawMessage) (any, error) {
+	n, err := buildNotifier(typ, cfg)
+	if err != nil {
+		return nil, err
+	}
+	return n, nil
+}

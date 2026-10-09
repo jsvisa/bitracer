@@ -1,0 +1,187 @@
+package store
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+)
+
+type Case struct {
+	ID        int64
+	Name      string
+	MinSats   *int64
+	DepthCap  int32
+	BranchCap int32
+	Status    string
+	CreatedAt time.Time
+}
+
+type CaseTx struct {
+	CaseID int64
+	Txid   string
+	Seeded bool
+}
+
+type Channel struct {
+	ID     int64
+	CaseID int64
+	Type   string
+	Config json.RawMessage
+}
+
+func (s *Store) CreateCase(ctx context.Context, name string, minSats *int64, depthCap, branchCap int32) (Case, error) {
+	var c Case
+	err := s.pool.QueryRow(ctx,
+		`INSERT INTO cases (name, min_sats, depth_cap, branch_cap) VALUES ($1, $2, $3, $4)
+		 RETURNING id, name, min_sats, depth_cap, branch_cap, status, created_at`,
+		name, minSats, depthCap, branchCap).Scan(&c.ID, &c.Name, &c.MinSats, &c.DepthCap, &c.BranchCap, &c.Status, &c.CreatedAt)
+	return c, err
+}
+
+const caseCols = `id, name, min_sats, depth_cap, branch_cap, status, created_at`
+
+func scanCase(row pgx.Row) (Case, error) {
+	var c Case
+	err := row.Scan(&c.ID, &c.Name, &c.MinSats, &c.DepthCap, &c.BranchCap, &c.Status, &c.CreatedAt)
+	return c, err
+}
+
+func (s *Store) GetCase(ctx context.Context, id int64) (Case, error) {
+	c, err := scanCase(s.pool.QueryRow(ctx, `SELECT `+caseCols+` FROM cases WHERE id = $1`, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return c, ErrNotFound
+	}
+	return c, err
+}
+
+func (s *Store) ListCases(ctx context.Context) ([]Case, error) {
+	rows, err := s.pool.Query(ctx, `SELECT `+caseCols+` FROM cases ORDER BY id DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Case
+	for rows.Next() {
+		c, err := scanCase(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) SetCaseStatus(ctx context.Context, id int64, status string) error {
+	_, err := s.pool.Exec(ctx, `UPDATE cases SET status = $2 WHERE id = $1`, id, status)
+	return err
+}
+
+func (s *Store) UpdateCase(ctx context.Context, id int64, name string, minSats *int64, depthCap, branchCap int32) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE cases SET name = $2, min_sats = $3, depth_cap = $4, branch_cap = $5 WHERE id = $1`,
+		id, name, minSats, depthCap, branchCap)
+	return err
+}
+
+func (s *Store) DeleteCase(ctx context.Context, id int64) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM cases WHERE id = $1`, id)
+	return err
+}
+
+func (s *Store) AddCaseTx(ctx context.Context, caseID int64, txid string) error {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO case_txs (case_id, txid) VALUES ($1, $2) ON CONFLICT DO NOTHING`, caseID, txid)
+	return err
+}
+
+func (s *Store) ListCaseTxs(ctx context.Context, caseID int64) ([]CaseTx, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT case_id, txid, seeded FROM case_txs WHERE case_id = $1 ORDER BY txid`, caseID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []CaseTx
+	for rows.Next() {
+		var t CaseTx
+		if err := rows.Scan(&t.CaseID, &t.Txid, &t.Seeded); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) DeleteCaseTx(ctx context.Context, caseID int64, txid string) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM case_txs WHERE case_id = $1 AND txid = $2`, caseID, txid)
+	return err
+}
+
+type CaseSeed struct {
+	CaseID    int64
+	Txid      string
+	MinSats   int64
+	DepthCap  int32
+	BranchCap int32
+}
+
+func (s *Store) PendingCaseSeeds(ctx context.Context) ([]CaseSeed, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT ct.case_id, ct.txid, COALESCE(c.min_sats, ss.default_min_sats), c.depth_cap, c.branch_cap
+		 FROM case_txs ct
+		 JOIN cases c ON c.id = ct.case_id AND c.status = 'active'
+		 CROSS JOIN sync_state ss
+		 WHERE ct.seeded = FALSE`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []CaseSeed
+	for rows.Next() {
+		var cs CaseSeed
+		if err := rows.Scan(&cs.CaseID, &cs.Txid, &cs.MinSats, &cs.DepthCap, &cs.BranchCap); err != nil {
+			return nil, err
+		}
+		out = append(out, cs)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) SetCaseTxSeeded(ctx context.Context, caseID int64, txid string) error {
+	_, err := s.pool.Exec(ctx, `UPDATE case_txs SET seeded = TRUE WHERE case_id = $1 AND txid = $2`, caseID, txid)
+	return err
+}
+
+func (s *Store) AddChannel(ctx context.Context, caseID int64, typ string, cfg json.RawMessage) (Channel, error) {
+	var ch Channel
+	err := s.pool.QueryRow(ctx,
+		`INSERT INTO case_channels (case_id, type, config) VALUES ($1, $2, $3)
+		 RETURNING id, case_id, type, config`, caseID, typ, cfg).Scan(&ch.ID, &ch.CaseID, &ch.Type, &ch.Config)
+	return ch, err
+}
+
+func (s *Store) ListChannels(ctx context.Context, caseID int64) ([]Channel, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, case_id, type, config FROM case_channels WHERE case_id = $1 ORDER BY id`, caseID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Channel
+	for rows.Next() {
+		var ch Channel
+		if err := rows.Scan(&ch.ID, &ch.CaseID, &ch.Type, &ch.Config); err != nil {
+			return nil, err
+		}
+		out = append(out, ch)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) DeleteChannel(ctx context.Context, id int64) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM case_channels WHERE id = $1`, id)
+	return err
+}
