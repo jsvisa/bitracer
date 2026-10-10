@@ -27,11 +27,21 @@ type ETL struct {
 
 	mu        sync.Mutex
 	backfills map[int64]bool
-	seedSats  map[int64]int64
+	seedSats  map[int64]seedSatsEntry
+}
+
+// seedSatsTTL bounds how long the cached decay-floor reference lives — long
+// enough to dedupe bursty walks, short enough to pick up re-seeds and late
+// seed additions without a restart.
+const seedSatsTTL = 30 * time.Second
+
+type seedSatsEntry struct {
+	value   int64
+	fetched time.Time
 }
 
 func New(st *store.Store, rpc *btc.Client, cfg config.Config, startBlock int64, minSats int64) *ETL {
-	return &ETL{st: st, rpc: rpc, cfg: cfg, startBlock: startBlock, minSats: minSats, backfills: map[int64]bool{}, seedSats: map[int64]int64{}}
+	return &ETL{st: st, rpc: rpc, cfg: cfg, startBlock: startBlock, minSats: minSats, backfills: map[int64]bool{}, seedSats: map[int64]seedSatsEntry{}}
 }
 
 func (e *ETL) Run(ctx context.Context) error {
@@ -336,11 +346,13 @@ func (e *ETL) addWatchedFromTx(ctx context.Context, caseID int64, minSats int64,
 			ValueSats: o.ValueSats, Depth: depth, Height: height,
 		})
 	}
-	inserted, err := e.st.AddWatched(ctx, rows)
-	if err != nil {
+	if _, err := e.st.AddWatched(ctx, rows); err != nil {
 		return err
 	}
-	for _, r := range inserted {
+	// check every candidate row, not just the newly inserted ones: on a seed
+	// retry the rows already exist (conflict no-op) but their terminal/fanin
+	// checks must still run
+	for _, r := range rows {
 		if r.Address == "" {
 			continue
 		}
@@ -349,7 +361,7 @@ func (e *ETL) addWatchedFromTx(ctx context.Context, caseID int64, minSats int64,
 		}
 	}
 	if e.cfg.FaninCount > 0 {
-		if err := e.checkFanin(ctx, caseID, inserted); err != nil {
+		if err := e.checkFanin(ctx, caseID, rows); err != nil {
 			return err
 		}
 	}
@@ -389,20 +401,21 @@ func (e *ETL) checkFanin(ctx context.Context, caseID int64, inserted []store.Wat
 	return nil
 }
 
-// caseSeedSats caches the largest depth-0 output per case for the decay floor.
+// caseSeedSats returns the largest depth-0 output per case for the decay
+// floor, cached under seedSatsTTL.
 func (e *ETL) caseSeedSats(ctx context.Context, caseID int64) (int64, error) {
 	e.mu.Lock()
-	v, ok := e.seedSats[caseID]
+	ent, ok := e.seedSats[caseID]
 	e.mu.Unlock()
-	if ok {
-		return v, nil
+	if ok && time.Since(ent.fetched) < seedSatsTTL {
+		return ent.value, nil
 	}
 	v, err := e.st.CaseSeedSats(ctx, caseID)
 	if err != nil {
 		return 0, err
 	}
 	e.mu.Lock()
-	e.seedSats[caseID] = v
+	e.seedSats[caseID] = seedSatsEntry{value: v, fetched: time.Now()}
 	e.mu.Unlock()
 	return v, nil
 }
@@ -683,9 +696,8 @@ func (e *ETL) catchUpCase(ctx context.Context, caseID int64, minSats int64, dept
 			return nil
 		}
 		depthOf := map[string]int32{}
-		var txids []string
-		var vouts []int32
 		seen := map[string]bool{}
+		var watchRows []store.WatchedRow
 		for _, r := range rows {
 			key := fmt.Sprintf("%s:%d", r.Txid, r.Vout)
 			depthOf[key] = r.Depth
@@ -693,52 +705,77 @@ func (e *ETL) catchUpCase(ctx context.Context, caseID int64, minSats int64, dept
 				continue
 			}
 			seen[key] = true
-			txids = append(txids, r.Txid)
-			vouts = append(vouts, r.Vout)
-		}
-		edges, err := e.st.SpendersOf(ctx, txids, vouts, 5000)
-		if err != nil {
-			return err
-		}
-		if len(edges) == 0 {
-			return nil
-		}
-		spenderSet := map[string]bool{}
-		for _, edge := range edges {
-			spenderSet[edge.Spender] = true
-		}
-		spenderList := make([]string, 0, len(spenderSet))
-		for txid := range spenderSet {
-			spenderList = append(spenderList, txid)
-		}
-		spenderOuts, err := e.st.OutputsForTxids(ctx, spenderList)
-		if err != nil {
-			return err
-		}
-		outsByTx := map[string][]store.IndexedOut{}
-		for _, o := range spenderOuts {
-			outsByTx[o.Txid] = append(outsByTx[o.Txid], o)
+			watchRows = append(watchRows, r)
 		}
 		progress := false
-		for _, edge := range edges {
-			m := store.WatchedMatch{
-				CaseID: caseID, Txid: edge.SpentTxid, Vout: edge.SpentVout,
-				Address: edge.Address, ValueSats: edge.ValueSats,
-				Depth:   depthOf[fmt.Sprintf("%s:%d", edge.SpentTxid, edge.SpentVout)],
-				MinSats: minSats, DepthCap: depthCap, BranchCap: branchCap,
+		// drain the current depth in batches: a hop wider than one
+		// SpendersOf batch must not consume the next hop's budget
+		for {
+			txids := make([]string, 0, len(watchRows))
+			vouts := make([]int32, 0, len(watchRows))
+			for _, r := range watchRows {
+				txids = append(txids, r.Txid)
+				vouts = append(vouts, r.Vout)
 			}
-			marked, err := e.st.MarkWatchedSpent(ctx, caseID, edge.SpentTxid, edge.SpentVout, edge.Spender, edge.Height)
+			edges, err := e.st.SpendersOf(ctx, txids, vouts, 5000)
 			if err != nil {
 				return err
 			}
-			if !marked {
-				continue
+			if len(edges) == 0 {
+				break
 			}
-			progress = true
-			// historical replay: this edge happened before the case tracked it
-			if err := e.afterSpend(ctx, m, edge.Spender, outsByTx[edge.Spender], edge.Height, "backfill"); err != nil {
+			spenderSet := map[string]bool{}
+			for _, edge := range edges {
+				spenderSet[edge.Spender] = true
+			}
+			spenderList := make([]string, 0, len(spenderSet))
+			for txid := range spenderSet {
+				spenderList = append(spenderList, txid)
+			}
+			spenderOuts, err := e.st.OutputsForTxids(ctx, spenderList)
+			if err != nil {
 				return err
 			}
+			outsByTx := map[string][]store.IndexedOut{}
+			for _, o := range spenderOuts {
+				outsByTx[o.Txid] = append(outsByTx[o.Txid], o)
+			}
+			for _, edge := range edges {
+				m := store.WatchedMatch{
+					CaseID: caseID, Txid: edge.SpentTxid, Vout: edge.SpentVout,
+					Address: edge.Address, ValueSats: edge.ValueSats,
+					Depth:   depthOf[fmt.Sprintf("%s:%d", edge.SpentTxid, edge.SpentVout)],
+					MinSats: minSats, DepthCap: depthCap, BranchCap: branchCap,
+				}
+				marked, err := e.st.MarkWatchedSpent(ctx, caseID, edge.SpentTxid, edge.SpentVout, edge.Spender, edge.Height)
+				if err != nil {
+					return err
+				}
+				if !marked {
+					continue
+				}
+				progress = true
+				delete(seen, fmt.Sprintf("%s:%d", edge.SpentTxid, edge.SpentVout))
+				// historical replay: this edge happened before the case tracked it
+				if err := e.afterSpend(ctx, m, edge.Spender, outsByTx[edge.Spender], edge.Height, "backfill"); err != nil {
+					return err
+				}
+			}
+			if len(edges) < 5000 {
+				break
+			}
+			rest := watchRows[:0]
+			for _, r := range watchRows {
+				if seen[fmt.Sprintf("%s:%d", r.Txid, r.Vout)] {
+					rest = append(rest, r)
+				}
+			}
+			if len(rest) == len(watchRows) {
+				// truncated batch made no progress (all edges lost the
+				// mark race) — stop rather than spin
+				break
+			}
+			watchRows = rest
 		}
 		if !progress {
 			return nil
