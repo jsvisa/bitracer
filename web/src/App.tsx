@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useState } from 'react'
-import { api, mempoolTx, type Alert, type Case, type CaseTx, type Channel, type GraphData, type SyncStatus } from './api'
+import {
+  api,
+  mempoolTx,
+  type Alert,
+  type Case,
+  type CaseTx,
+  type Channel,
+  type GraphData,
+  type SyncStatus,
+} from './api'
 import { GraphView } from './GraphView'
 
 export function App() {
@@ -31,7 +40,12 @@ export function App() {
       {showChannels && <ChannelsManager onClose={() => setShowChannels(false)} />}
       <div className="layout">
         <aside>
-          <NewCaseForm onCreated={(c) => { setCases([c, ...cases]); setSelected(c.id) }} />
+          <NewCaseForm
+            onCreated={(c) => {
+              setCases([c, ...cases])
+              setSelected(c.id)
+            }}
+          />
           <ul className="case-list">
             {cases.map((c) => (
               <li
@@ -39,7 +53,9 @@ export function App() {
                 className={c.id === selected ? 'selected' : ''}
                 onClick={() => setSelected(c.id)}
               >
-                <span className="case-name">#{c.id} {c.name}</span>
+                <span className="case-name">
+                  #{c.id} {c.name}
+                </span>
                 {c.tx_total > 0 &&
                   (c.tx_seeded < c.tx_total ? (
                     <span
@@ -56,14 +72,17 @@ export function App() {
                       tracking {c.tx_total}
                     </span>
                   ))}
-                {c.backfill_target > 0 && c.backfill_checkpoint > 0 && c.backfill_checkpoint < c.backfill_target && (
-                  <span
-                    className="badge backfill"
-                    title={`backfill checkpoint ${c.backfill_checkpoint.toLocaleString()} → target ${c.backfill_target.toLocaleString()}`}
-                  >
-                    backfill {Math.min(99, Math.floor((c.backfill_checkpoint / c.backfill_target) * 100))}%
-                  </span>
-                )}
+                {c.backfill_target > 0 &&
+                  c.backfill_checkpoint > 0 &&
+                  c.backfill_checkpoint < c.backfill_target && (
+                    <span
+                      className="badge backfill"
+                      title={`backfill checkpoint ${c.backfill_checkpoint.toLocaleString()} → target ${c.backfill_target.toLocaleString()}`}
+                    >
+                      backfill{' '}
+                      {Math.min(99, Math.floor((c.backfill_checkpoint / c.backfill_target) * 100))}%
+                    </span>
+                  )}
                 <span className={`badge ${c.status}`}>{c.status}</span>
               </li>
             ))}
@@ -92,7 +111,11 @@ function SyncBadge() {
   const [status, setStatus] = useState<SyncStatus | null>(null)
 
   useEffect(() => {
-    const load = () => api.syncStatus().then(setStatus).catch(() => {})
+    const load = () =>
+      api
+        .syncStatus()
+        .then(setStatus)
+        .catch(() => {})
     load()
     const t = setInterval(load, 15000)
     return () => clearInterval(t)
@@ -159,7 +182,10 @@ function NewCaseForm({ onCreated }: { onCreated: (c: Case) => void }) {
   const [err, setErr] = useState('')
 
   useEffect(() => {
-    api.listChannels().then(setChannels).catch(() => {})
+    api
+      .listChannels()
+      .then(setChannels)
+      .catch(() => {})
   }, [])
 
   const toggle = (id: number) =>
@@ -187,15 +213,28 @@ function NewCaseForm({ onCreated }: { onCreated: (c: Case) => void }) {
     <form onSubmit={submit} className="panel">
       <h3>new case</h3>
       <p className="sub">step 1 — bind channels, then add source txhashes after the case opens</p>
-      <input placeholder="case name" value={name} onChange={(e) => setName(e.target.value)} required />
-      <input placeholder="min BTC (default 0.1)" value={minBTC} onChange={(e) => setMinBTC(e.target.value)} />
+      <input
+        placeholder="case name"
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        required
+      />
+      <input
+        placeholder="min BTC (default 0.1)"
+        value={minBTC}
+        onChange={(e) => setMinBTC(e.target.value)}
+      />
       <div className="pick-list">
         {channels.length === 0 ? (
           <p className="empty">no notify channels yet — add one from the channels panel first</p>
         ) : (
           channels.map((ch) => (
             <label key={ch.id} className="pick-row">
-              <input type="checkbox" checked={picked.includes(ch.id)} onChange={() => toggle(ch.id)} />
+              <input
+                type="checkbox"
+                checked={picked.includes(ch.id)}
+                onChange={() => toggle(ch.id)}
+              />
               <span className="pick-name">{ch.name}</span>
               <span className="badge">{ch.type}</span>
             </label>
@@ -204,7 +243,11 @@ function NewCaseForm({ onCreated }: { onCreated: (c: Case) => void }) {
       </div>
       <p className="sub">pick at least one channel — case alerts fan out to it</p>
       {err && <p className="err">{err}</p>}
-      <button type="submit" disabled={picked.length === 0} title={picked.length === 0 ? 'bind at least one channel first' : ''}>
+      <button
+        type="submit"
+        disabled={picked.length === 0}
+        title={picked.length === 0 ? 'bind at least one channel first' : ''}
+      >
         create case
       </button>
     </form>
@@ -213,7 +256,15 @@ function NewCaseForm({ onCreated }: { onCreated: (c: Case) => void }) {
 
 type Tab = 'txs' | 'channels' | 'graph' | 'alerts'
 
-function CaseDetail({ id, minSats, onChanged }: { id: number; minSats: number | null; onChanged: () => void }) {
+function CaseDetail({
+  id,
+  minSats,
+  onChanged,
+}: {
+  id: number
+  minSats: number | null
+  onChanged: () => void
+}) {
   const [tab, setTab] = useState<Tab>('txs')
   const [txs, setTxs] = useState<CaseTx[]>([])
   const [channels, setChannels] = useState<Channel[]>([])
@@ -230,7 +281,11 @@ function CaseDetail({ id, minSats, onChanged }: { id: number; minSats: number | 
   }, [refresh])
 
   useEffect(() => {
-    const load = () => api.listAlerts(id).then(setAlerts).catch(() => {})
+    const load = () =>
+      api
+        .listAlerts(id)
+        .then(setAlerts)
+        .catch(() => {})
     load()
     const t = setInterval(load, 15000)
     return () => clearInterval(t)
@@ -265,7 +320,15 @@ function CaseDetail({ id, minSats, onChanged }: { id: number; minSats: number | 
   )
 }
 
-function TxsTab({ caseId, txs, onChanged }: { caseId: number; txs: CaseTx[]; onChanged: () => void }) {
+function TxsTab({
+  caseId,
+  txs,
+  onChanged,
+}: {
+  caseId: number
+  txs: CaseTx[]
+  onChanged: () => void
+}) {
   const [txid, setTxid] = useState('')
   const [err, setErr] = useState('')
 
@@ -325,7 +388,9 @@ function TxsTab({ caseId, txs, onChanged }: { caseId: number; txs: CaseTx[]; onC
           ))}
           {txs.length === 0 && (
             <tr>
-              <td colSpan={3} className="empty">no txhashes tracked yet — step 2: add the source txhash(es) above</td>
+              <td colSpan={3} className="empty">
+                no txhashes tracked yet — step 2: add the source txhash(es) above
+              </td>
             </tr>
           )}
         </tbody>
@@ -334,12 +399,23 @@ function TxsTab({ caseId, txs, onChanged }: { caseId: number; txs: CaseTx[]; onC
   )
 }
 
-function ChannelsTab({ caseId, subscribed, onChanged }: { caseId: number; subscribed: Channel[]; onChanged: () => void }) {
+function ChannelsTab({
+  caseId,
+  subscribed,
+  onChanged,
+}: {
+  caseId: number
+  subscribed: Channel[]
+  onChanged: () => void
+}) {
   const [all, setAll] = useState<Channel[]>([])
   const [err, setErr] = useState('')
 
   useEffect(() => {
-    api.listChannels().then(setAll).catch((e) => setErr(String(e)))
+    api
+      .listChannels()
+      .then(setAll)
+      .catch((e) => setErr(String(e)))
   }, [])
 
   const toggle = async (ch: Channel) => {
@@ -361,7 +437,10 @@ function ChannelsTab({ caseId, subscribed, onChanged }: { caseId: number; subscr
 
   return (
     <div>
-      <p className="sub">pick which global notify channels receive this case's alerts — manage channels from the header panel. at least one stays bound.</p>
+      <p className="sub">
+        pick which global notify channels receive this case's alerts — manage channels from the
+        header panel. at least one stays bound.
+      </p>
       {err && <p className="err">{err}</p>}
       <table>
         <thead>
@@ -380,7 +459,11 @@ function ChannelsTab({ caseId, subscribed, onChanged }: { caseId: number; subscr
                   type="checkbox"
                   checked={subscribed.some((s) => s.id === c.id)}
                   disabled={subscribed.length === 1 && subscribed.some((s) => s.id === c.id)}
-                  title={subscribed.length === 1 && subscribed.some((s) => s.id === c.id) ? 'at least one channel must stay bound' : ''}
+                  title={
+                    subscribed.length === 1 && subscribed.some((s) => s.id === c.id)
+                      ? 'at least one channel must stay bound'
+                      : ''
+                  }
                   onChange={() => toggle(c)}
                 />
               </td>
@@ -395,7 +478,9 @@ function ChannelsTab({ caseId, subscribed, onChanged }: { caseId: number; subscr
           ))}
           {all.length === 0 && (
             <tr>
-              <td colSpan={4} className="empty">no channels configured — add one from the channels panel in the header</td>
+              <td colSpan={4} className="empty">
+                no channels configured — add one from the channels panel in the header
+              </td>
             </tr>
           )}
         </tbody>
@@ -446,7 +531,12 @@ function ChannelsManager({ onClose }: { onClose: () => void }) {
                   <button
                     className="danger"
                     onClick={async () => {
-                      if (!confirm(`delete channel "${c.name}"? cases subscribed to it will stop notifying`)) return
+                      if (
+                        !confirm(
+                          `delete channel "${c.name}"? cases subscribed to it will stop notifying`,
+                        )
+                      )
+                        return
                       setErr('')
                       try {
                         await api.deleteChannel(c.id)
@@ -463,7 +553,9 @@ function ChannelsManager({ onClose }: { onClose: () => void }) {
             ))}
             {channels.length === 0 && (
               <tr>
-                <td colSpan={4} className="empty">no channels configured</td>
+                <td colSpan={4} className="empty">
+                  no channels configured
+                </td>
               </tr>
             )}
           </tbody>
@@ -519,13 +611,29 @@ function ChannelForm({ onCreated }: { onCreated: () => void }) {
 
   return (
     <form onSubmit={submit} className="row wrap">
-      <select value={type} onChange={(e) => { setType(e.target.value); resetFields() }}>
+      <select
+        value={type}
+        onChange={(e) => {
+          setType(e.target.value)
+          resetFields()
+        }}
+      >
         <option value="slack">slack</option>
         <option value="telegram">telegram</option>
         <option value="lark">lark</option>
       </select>
-      <input placeholder="channel name (unique)" value={name} onChange={(e) => setName(e.target.value)} required />
-      <input placeholder={channelLabels[type][0]} value={field1} onChange={(e) => setField1(e.target.value)} required />
+      <input
+        placeholder="channel name (unique)"
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        required
+      />
+      <input
+        placeholder={channelLabels[type][0]}
+        value={field1}
+        onChange={(e) => setField1(e.target.value)}
+        required
+      />
       {channelLabels[type][1] && (
         <input
           placeholder={channelLabels[type][1]}
@@ -544,7 +652,15 @@ function ChannelForm({ onCreated }: { onCreated: () => void }) {
   )
 }
 
-function GraphTab({ caseId, txs, minSats }: { caseId: number; txs: CaseTx[]; minSats: number | null }) {
+function GraphTab({
+  caseId,
+  txs,
+  minSats,
+}: {
+  caseId: number
+  txs: CaseTx[]
+  minSats: number | null
+}) {
   const [depth, setDepth] = useState(6)
   const [data, setData] = useState<GraphData | null>(null)
   const [err, setErr] = useState('')
@@ -585,7 +701,9 @@ function GraphTab({ caseId, txs, minSats }: { caseId: number; txs: CaseTx[]; min
         </span>
         <select value={depth} onChange={(e) => setDepth(parseInt(e.target.value))}>
           {[3, 6, 10, 15, 20].map((d) => (
-            <option key={d} value={d}>depth {d}</option>
+            <option key={d} value={d}>
+              depth {d}
+            </option>
           ))}
         </select>
         <button type="submit" disabled={loading}>
@@ -596,7 +714,9 @@ function GraphTab({ caseId, txs, minSats }: { caseId: number; txs: CaseTx[]; min
       {data == null ? (
         <p className="empty">{loading ? 'drawing case fund flow…' : 'no graph data'}</p>
       ) : data.nodes.length === 0 ? (
-        <p className="empty">no outputs at or above the {(threshold / 1e8).toFixed(2)} BTC threshold</p>
+        <p className="empty">
+          no outputs at or above the {(threshold / 1e8).toFixed(2)} BTC threshold
+        </p>
       ) : (
         <GraphView data={data} />
       )}
@@ -632,7 +752,9 @@ function AlertsTab({ alerts }: { alerts: Alert[] }) {
         ))}
         {alerts.length === 0 && (
           <tr>
-            <td colSpan={4} className="empty">no alerts yet</td>
+            <td colSpan={4} className="empty">
+              no alerts yet
+            </td>
           </tr>
         )}
       </tbody>
