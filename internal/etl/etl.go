@@ -129,7 +129,7 @@ func (e *ETL) SyncBlocks(ctx context.Context) error {
 		if err := e.st.SetLastHeight(ctx, h); err != nil {
 			return err
 		}
-		if h%1000 == 0 {
+		if h%100 == 0 {
 			done := h - start + 1
 			secs := time.Since(began).Seconds()
 			if secs <= 0 {
