@@ -6,7 +6,15 @@ package casegraph
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/jsvisa/bitracer/internal/btc"
 	"github.com/jsvisa/bitracer/internal/store"
@@ -296,10 +304,113 @@ func shortAddr(s string) string {
 	return s[:12] + "…"
 }
 
+// PublicURL and ChromeBin are set once at startup (BITRACER_PUBLIC_URL /
+// BITRACER_CHROME). When both resolve, CaseGraphPNG snapshots the real
+// dashboard graph view in headless Chrome; the pure-Go renderer is the
+// fallback.
+var (
+	PublicURL string
+	ChromeBin string
+)
+
 // CaseGraphPNG renders the case's current fund-flow graph for notify
 // messages (bounded depth so the chart stays readable); any failure
 // returns nil and the notification degrades to text-only.
 func CaseGraphPNG(ctx context.Context, st *store.Store, caseID int64) []byte {
+	if PublicURL != "" {
+		if png, err := SnapshotPNG(ctx, caseID); err != nil {
+			slog.Warn("dashboard snapshot failed; rendering from index", "case", caseID, "err", err)
+		} else if len(png) > 0 {
+			return png
+		}
+	}
+	return renderCasePNG(ctx, st, caseID)
+}
+
+// snapshotCtxTimeout bounds one headless-Chrome screenshot.
+const snapshotCtxTimeout = 20 * time.Second
+
+// SnapshotPNG screenshots the dashboard's graph tab for the case in
+// headless Chrome (same dagre layout the web app shows).
+func SnapshotPNG(ctx context.Context, caseID int64) ([]byte, error) {
+	chrome, err := chromePath()
+	if err != nil {
+		return nil, err
+	}
+	dir, err := os.MkdirTemp("", "bitracer-shot-")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(dir)
+	out := filepath.Join(dir, "shot.png")
+	url := strings.TrimRight(PublicURL, "/") + "/#case=" + strconv.FormatInt(caseID, 10) + "&tab=graph&embed=1"
+	base := []string{
+		"--disable-gpu", "--no-sandbox", "--hide-scrollbars",
+		"--user-data-dir=" + filepath.Join(dir, "profile"),
+		"--window-size=1500,850",
+		"--force-device-scale-factor=2",
+		// fast-forward the dashboard's data fetches + render before shooting
+		"--virtual-time-budget=10000",
+		"--screenshot=" + out,
+		url,
+	}
+	ctx, cancel := context.WithTimeout(ctx, snapshotCtxTimeout)
+	defer cancel()
+	// newer Chrome uses --headless=new; fall back for older binaries
+	err = exec.CommandContext(ctx, chrome, append([]string{"--headless=new"}, base...)...).Run()
+	if err != nil {
+		err = exec.CommandContext(ctx, chrome, append([]string{"--headless"}, base...)...).Run()
+		if err != nil {
+			return nil, err
+		}
+	}
+	b, err := os.ReadFile(out)
+	if err != nil {
+		return nil, err
+	}
+	// chrome writes an empty/garbage file when it exits early
+	if len(b) < 100 || b[0] != 0x89 || b[1] != 'P' {
+		return nil, errors.New("screenshot did not produce a PNG")
+	}
+	return b, nil
+}
+
+var (
+	chromeOnce sync.Once
+	chromeFound string
+)
+
+func chromePath() (string, error) {
+	chromeOnce.Do(func() {
+		candidates := []string{ChromeBin}
+		if runtime.GOOS == "darwin" {
+			candidates = append(candidates,
+				"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+				"/Applications/Chromium.app/Contents/MacOS/Chromium",
+			)
+		}
+		candidates = append(candidates,
+			"google-chrome", "google-chrome-stable", "chromium", "chromium-browser",
+		)
+		for _, c := range candidates {
+			if c == "" {
+				continue
+			}
+			if p, err := exec.LookPath(c); err == nil {
+				chromeFound = p
+				return
+			}
+		}
+	})
+	if chromeFound == "" {
+		return "", errors.New("no chrome/chromium binary found (set BITRACER_CHROME)")
+	}
+	return chromeFound, nil
+}
+
+// renderCasePNG renders the case's current fund-flow graph straight from
+// the index with the pure-Go renderer.
+func renderCasePNG(ctx context.Context, st *store.Store, caseID int64) []byte {
 	c, err := st.GetCase(ctx, caseID)
 	if err != nil {
 		return nil

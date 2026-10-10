@@ -15,6 +15,7 @@ import (
 
 	"github.com/jsvisa/bitracer/internal/api"
 	"github.com/jsvisa/bitracer/internal/btc"
+	"github.com/jsvisa/bitracer/internal/casegraph"
 	"github.com/jsvisa/bitracer/internal/config"
 	"github.com/jsvisa/bitracer/internal/etl"
 	"github.com/jsvisa/bitracer/internal/labeler"
@@ -32,6 +33,8 @@ func main() {
 	}
 	cfg := config.Load()
 	notify.DashboardBase = cfg.PublicURL
+	casegraph.PublicURL = cfg.PublicURL
+	casegraph.ChromeBin = cfg.ChromePath
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -124,7 +127,10 @@ Environment:
                       seed output, default 1; 0 = off),
   BITRACER_PUBLIC_URL (dashboard base URL; when set, notifications that
                        cannot carry the case-graph image link to
-                       {URL}/#case=N&tab=graph),
+                       {URL}/#case=N&tab=graph, and with a Chrome binary
+                       present the notify image is a snapshot of that page),
+  BITRACER_CHROME (path to a Chrome/Chromium binary for the notify graph
+                   snapshot; auto-detected when unset),
   BITRACER_SEED_LABELS (JSON file of known entities to preload:
                         {"addr": {"label": "...", "kind": "cex|mixer|..."}})
 `)
