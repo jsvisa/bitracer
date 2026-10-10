@@ -363,10 +363,10 @@ func (t *Telegram) Name() string { return "telegram" }
 
 func (t *Telegram) Send(ctx context.Context, msg Message) error {
 	if len(msg.PNG) > 0 {
-		if err := t.sendPhoto(ctx, msg); err == nil {
+		if err := t.sendDocument(ctx, msg); err == nil {
 			return nil
 		} else {
-			slog.Warn("telegram sendPhoto failed; sending text", "err", err)
+			slog.Warn("telegram sendDocument failed; sending text", "err", err)
 		}
 	}
 	var b strings.Builder

@@ -12,9 +12,12 @@ import (
 	"strings"
 )
 
-// sendPhoto posts the graph image with the text as its caption
-// (Telegram caps captions at 1024 chars).
-func (t *Telegram) sendPhoto(ctx context.Context, msg Message) error {
+// sendDocument posts the graph as an uncompressed PNG document —
+// Telegram's sendPhoto path JPEG-recompresses and downscales images,
+// which renders the chart's small text unreadable. Documents keep full
+// resolution (clients show an inline preview for PNG) with the text as
+// the caption, capped at 1024 chars.
+func (t *Telegram) sendDocument(ctx context.Context, msg Message) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "<b>bitracer · %s</b>\n", kindLabel(msg))
 	fmt.Fprintf(&b, "<b>%s</b>\n", escapeHTML(msg.Headline))
@@ -29,12 +32,12 @@ func (t *Telegram) sendPhoto(ctx context.Context, msg Message) error {
 		"chat_id":    t.chat,
 		"parse_mode": "HTML",
 		"caption":    caption,
-	}, "photo", "case-graph.png", msg.PNG)
+	}, "document", fmt.Sprintf("case-%d-graph.png", msg.CaseID), msg.PNG)
 	if err != nil {
 		return err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		"https://api.telegram.org/bot"+t.token+"/sendPhoto", bytes.NewReader(body))
+		"https://api.telegram.org/bot"+t.token+"/sendDocument", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -45,7 +48,7 @@ func (t *Telegram) sendPhoto(ctx context.Context, msg Message) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("telegram sendPhoto http %d", resp.StatusCode)
+		return fmt.Errorf("telegram sendDocument http %d", resp.StatusCode)
 	}
 	var out struct {
 		OK bool `json:"ok"`
@@ -54,7 +57,7 @@ func (t *Telegram) sendPhoto(ctx context.Context, msg Message) error {
 		return err
 	}
 	if !out.OK {
-		return fmt.Errorf("telegram sendPhoto rejected")
+		return fmt.Errorf("telegram sendDocument rejected")
 	}
 	return nil
 }

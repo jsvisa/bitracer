@@ -344,7 +344,7 @@ func (c canvas) bezier(x0, y0, x1, y1 float64, col color.Color) (mx, my, ex, ey 
 	for i := 0; i <= steps; i++ {
 		t := float64(i) / steps
 		px, py := pt(t)
-		c.disc(int(px), int(py), 1.2, col)
+		c.disc(int(px), int(py), 1.5, col)
 		if i == steps-1 {
 			lx, ly = px, py
 		}
@@ -438,6 +438,28 @@ func Render(g *Graph) ([]byte, error) {
 	c := canvas{img: image.NewRGBA(image.Rect(0, 0, w, h+footerH))}
 	draw.Draw(c.img, c.img.Bounds(), &image.Uniform{colBG}, image.Point{}, draw.Src)
 
+	// occupied holds node cards plus placed edge-label boxes; labels
+	// stepping on any of them get nudged vertically instead
+	var occupied []image.Rectangle
+	for _, p := range pos {
+		occupied = append(occupied, image.Rect(p.x-p.w/2-2, p.y-p.h/2-2, p.x+p.w/2+2, p.y+p.h/2+2))
+	}
+	free := func(r image.Rectangle) bool {
+		for _, o := range occupied {
+			if r.Overlaps(o) {
+				return false
+			}
+		}
+		return true
+	}
+
+	type labelDraw struct {
+		x, y, w int
+		hp, val string
+		muted   bool
+	}
+	var pending []labelDraw
+
 	for _, e := range edges {
 		s, t := pos[e.from], pos[e.to]
 		if s == nil || t == nil {
@@ -452,29 +474,46 @@ func Render(g *Graph) ([]byte, error) {
 		}
 		_, _, ex, ey := c.bezier(x0, y0, x1, y1, colOrange)
 		c.arrow(x1+7, y1, ex, ey, colOrange)
-		label := fmtBTC(e.value)
 		hp := ""
 		if e.height > 0 {
 			hp = "[" + strconv.FormatInt(e.height, 10) + "] "
 		}
-		totalW := textW(hp) + textW(label)
+		val := fmtBTC(e.value)
+		totalW := textW(hp) + textW(val)
 		lx := int((x0+x1)/2) - totalW/2
 		if lx < 4 {
 			lx = 4
 		}
-		ly := int((y0+y1)/2) - 18
-		// dark halo keeps the label readable where curves cross it
-		c.fillRoundRect(lx-3, ly-2, totalW+6, 17, 4, colBG)
-		if hp != "" {
-			c.text(lx, ly, hp, colOrange)
-			c.text(lx+textW(hp), ly, label, colText)
-		} else {
-			c.text(lx, ly, label, colMuted)
-		}
+		pending = append(pending, labelDraw{
+			x: lx, y: int((y0+y1)/2) - 18, w: totalW,
+			hp: hp, val: val, muted: hp == "",
+		})
 	}
 
 	for _, p := range pos {
 		drawCard(c, p.x-p.w/2, p.y-p.h/2, p.w, p.h, p.n)
+	}
+
+	// labels go on top of everything; nudge until on free space
+	for i := range pending {
+		l := &pending[i]
+		box := image.Rect(l.x-3, l.y-2, l.x+l.w+3, l.y+15)
+		for _, off := range [6]int{0, -18, 18, -36, 36, -54} {
+			box = image.Rect(l.x-3, l.y+off-2, l.x+l.w+3, l.y+off+15)
+			if free(box) {
+				l.y += off
+				break
+			}
+		}
+		occupied = append(occupied, box)
+		// dark halo keeps the label readable where curves cross it
+		c.fillRoundRect(l.x-3, l.y-2, l.w+6, 17, 4, colBG)
+		if l.hp != "" {
+			c.text(l.x, l.y, l.hp, colOrange)
+			c.text(l.x+textW(l.hp), l.y, l.val, colText)
+		} else {
+			c.text(l.x, l.y, l.val, colMuted)
+		}
 	}
 
 	if dropped > 0 {
