@@ -168,6 +168,10 @@ function NewCaseForm({ onCreated }: { onCreated: (c: Case) => void }) {
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
     setErr('')
+    if (picked.length === 0) {
+      setErr('bind at least one notify channel before creating the case')
+      return
+    }
     try {
       const c = await api.createCase(name, minBTC ? parseFloat(minBTC) : undefined, picked)
       setName('')
@@ -182,11 +186,12 @@ function NewCaseForm({ onCreated }: { onCreated: (c: Case) => void }) {
   return (
     <form onSubmit={submit} className="panel">
       <h3>new case</h3>
+      <p className="sub">step 1 — bind channels, then add source txhashes after the case opens</p>
       <input placeholder="case name" value={name} onChange={(e) => setName(e.target.value)} required />
       <input placeholder="min BTC (default 0.1)" value={minBTC} onChange={(e) => setMinBTC(e.target.value)} />
       <div className="pick-list">
         {channels.length === 0 ? (
-          <p className="empty">no notify channels yet — add one from the channels panel</p>
+          <p className="empty">no notify channels yet — add one from the channels panel first</p>
         ) : (
           channels.map((ch) => (
             <label key={ch.id} className="pick-row">
@@ -197,8 +202,11 @@ function NewCaseForm({ onCreated }: { onCreated: (c: Case) => void }) {
           ))
         )}
       </div>
+      <p className="sub">pick at least one channel — case alerts fan out to it</p>
       {err && <p className="err">{err}</p>}
-      <button type="submit">create case</button>
+      <button type="submit" disabled={picked.length === 0} title={picked.length === 0 ? 'bind at least one channel first' : ''}>
+        create case
+      </button>
     </form>
   )
 }
@@ -317,7 +325,7 @@ function TxsTab({ caseId, txs, onChanged }: { caseId: number; txs: CaseTx[]; onC
           ))}
           {txs.length === 0 && (
             <tr>
-              <td colSpan={3} className="empty">no txhashes tracked yet</td>
+              <td colSpan={3} className="empty">no txhashes tracked yet — step 2: add the source txhash(es) above</td>
             </tr>
           )}
         </tbody>
@@ -336,6 +344,10 @@ function ChannelsTab({ caseId, subscribed, onChanged }: { caseId: number; subscr
 
   const toggle = async (ch: Channel) => {
     setErr('')
+    if (subscribed.length === 1 && subscribed.some((c) => c.id === ch.id)) {
+      setErr('at least one channel must stay bound to the case')
+      return
+    }
     const ids = subscribed.some((c) => c.id === ch.id)
       ? subscribed.filter((c) => c.id !== ch.id).map((c) => c.id)
       : [...subscribed.map((c) => c.id), ch.id]
@@ -349,7 +361,7 @@ function ChannelsTab({ caseId, subscribed, onChanged }: { caseId: number; subscr
 
   return (
     <div>
-      <p className="sub">pick which global notify channels receive this case's alerts — manage channels from the header panel</p>
+      <p className="sub">pick which global notify channels receive this case's alerts — manage channels from the header panel. at least one stays bound.</p>
       {err && <p className="err">{err}</p>}
       <table>
         <thead>
@@ -367,6 +379,8 @@ function ChannelsTab({ caseId, subscribed, onChanged }: { caseId: number; subscr
                 <input
                   type="checkbox"
                   checked={subscribed.some((s) => s.id === c.id)}
+                  disabled={subscribed.length === 1 && subscribed.some((s) => s.id === c.id)}
+                  title={subscribed.length === 1 && subscribed.some((s) => s.id === c.id) ? 'at least one channel must stay bound' : ''}
                   onChange={() => toggle(c)}
                 />
               </td>
