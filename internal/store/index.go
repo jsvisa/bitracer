@@ -234,6 +234,7 @@ func (s *Store) SpendersOf(ctx context.Context, spentTxids []string, spentVouts 
 		 FROM unnest($1::text[], $2::int[]) AS u(txid, vout)
 		 JOIN tx_inputs i ON i.spent_txid = u.txid AND i.spent_vout = u.vout
 		 JOIN tx_outputs o ON o.txid = u.txid AND o.vout = u.vout
+		 ORDER BY i.height, i.txid, i.vout
 		 LIMIT $3`,
 		spentTxids, spentVouts, limit)
 	if err != nil {
