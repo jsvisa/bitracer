@@ -27,6 +27,12 @@ func TestSmoke(t *testing.T) {
 		chunks[1] != strings.Repeat("y", 200) {
 		t.Fatalf("newline split: %d chunks", len(chunks))
 	}
+	if got := stripMention("@BitBot where are the funds? @bitbot", "bitbot"); got != "where are the funds?" {
+		t.Fatalf("stripMention: %q", got)
+	}
+	if got := stripMention("no mention here", "bitbot"); got != "no mention here" {
+		t.Fatalf("stripMention passthrough: %q", got)
+	}
 	ids := parseChatIDs(" 111, -100abc ,222,")
 	if !ids[111] || !ids[222] || len(ids) != 2 {
 		t.Fatalf("parseChatIDs: %v", ids)

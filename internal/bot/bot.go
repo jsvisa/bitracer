@@ -25,6 +25,7 @@ type Bot struct {
 	tg         *Telegram
 	readAllow  map[int64]bool
 	adminAllow map[int64]bool
+	username   string // bot's own @username, "" when getMe failed
 	offset     int64
 }
 
@@ -59,6 +60,12 @@ func New(ctx context.Context, st *store.Store, cfg config.Config) *Bot {
 	}
 	if len(b.adminAllow) == 0 {
 		slog.Warn("bot: write tools disabled (BITRACER_BOT_ADMIN_CHATS empty)")
+	}
+	if u, err := b.tg.Me(ctx); err == nil {
+		b.username = u.Username
+		slog.Info("bot: identity", "username", "@"+u.Username)
+	} else {
+		slog.Warn("bot: getMe failed; in groups every received message will be answered", "err", err)
 	}
 	return b
 }
@@ -96,10 +103,23 @@ func (b *Bot) handle(ctx context.Context, m *tgMessage) {
 		slog.Warn("bot: ignoring disallowed chat", "chat_id", m.Chat.ID)
 		return
 	}
+	text := strings.TrimSpace(m.Text)
+	// Groups (chat id < 0): only answer messages that @mention the bot,
+	// regardless of Telegram privacy mode, and strip the mention before
+	// the LLM sees it.
+	if m.Chat.ID < 0 && b.username != "" {
+		if !strings.Contains(strings.ToLower(text), "@"+strings.ToLower(b.username)) {
+			return
+		}
+		text = stripMention(text, b.username)
+		if text == "" {
+			return
+		}
+	}
 	admin := b.adminAllow[m.Chat.ID]
 	b.tg.Typing(ctx, m.Chat.ID)
 
-	reply, err := b.answer(ctx, m.Chat.ID, m.Text, admin)
+	reply, err := b.answer(ctx, m.Chat.ID, text, admin)
 	if err != nil {
 		slog.Error("bot: answer failed", "chat_id", m.Chat.ID, "err", err)
 		reply = "sorry, answering failed: " + err.Error()
@@ -220,6 +240,20 @@ func helpText(admin bool) string {
 			"or send a test alert.")
 	}
 	return b.String()
+}
+
+// stripMention removes every case-insensitive "@username" occurrence from
+// text so the LLM sees the question, not the bot handle.
+func stripMention(text, username string) string {
+	at := "@" + strings.ToLower(username)
+	for {
+		low := strings.ToLower(text)
+		i := strings.Index(low, at)
+		if i < 0 {
+			return strings.TrimSpace(text)
+		}
+		text = text[:i] + text[i+len(at):]
+	}
 }
 
 func parseChatIDs(s string) map[int64]bool {

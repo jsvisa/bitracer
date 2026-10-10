@@ -30,6 +30,7 @@ func NewTelegram(token string) *Telegram {
 type tgUser struct {
 	ID        int64  `json:"id"`
 	FirstName string `json:"first_name"`
+	Username  string `json:"username"`
 }
 
 type tgChat struct {
@@ -52,6 +53,13 @@ type tgResponse struct {
 	OK          bool            `json:"ok"`
 	Description string          `json:"description"`
 	Result      json.RawMessage `json:"result"`
+}
+
+// Me returns the bot's own identity (username used for @mention detection).
+func (t *Telegram) Me(ctx context.Context) (tgUser, error) {
+	var u tgUser
+	err := t.get(ctx, "/getMe", &u)
+	return u, err
 }
 
 // Updates long-polls getUpdates for up to waitSec seconds and returns the
