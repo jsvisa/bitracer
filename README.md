@@ -154,9 +154,19 @@ DELETE /api/addresses/{address}/terminal
 
 Channel configs: slack `{"webhook": "https://hooks.slack.com/...", "channel":
 "#alerts"}` (`channel` is optional; overrides the webhook's bound channel on
-legacy incoming webhooks),
+legacy incoming webhooks; a bot `token` (`xoxb-...`, needs `files:write` +
+`chat:write`) switches image-capable posts to the Web API with the graph
+attached and targets `channel` as a channel ID),
 telegram `{"token": "...", "chat_id": "..."}`
-lark `{"webhook": "https://open.larksuite.com/open-apis/bot/v2/hook/..."}`.
+lark `{"webhook": "https://open.larksuite.com/open-apis/bot/v2/hook/...",
+"app_id": "...", "app_secret": "..."}` (`app_id`/`app_secret` are optional;
+with them the graph image is uploaded and embedded in the card).
+
+Alerts carry the case's fund-flow graph rendered as a PNG (same layout as
+the dashboard, capped at 80 nodes): Telegram posts it via `sendPhoto`,
+Slack uploads it when a bot token is configured, Lark embeds it when app
+credentials are configured — channels without those credentials get the
+plain text message.
 
 ## Semantics & caveats
 

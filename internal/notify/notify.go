@@ -53,6 +53,9 @@ type Message struct {
 	// Parking is where the tracked funds sit at alert time, sorted by
 	// amount desc. Optional; renderers show it as a summary line.
 	Parking []Holding
+	// PNG is an optional image (the case's fund-flow graph); channels
+	// that can carry images attach it, the rest render text only.
+	PNG []byte
 }
 
 func TestMessage() Message {
@@ -138,15 +141,16 @@ func Build(typ string, raw json.RawMessage) (Notifier, error) {
 	case "slack":
 		var cfg struct {
 			Webhook string `json:"webhook"`
+			Token   string `json:"token"`
 			Channel string `json:"channel"`
 		}
 		if err := json.Unmarshal(raw, &cfg); err != nil {
 			return nil, fmt.Errorf("slack config: %w", err)
 		}
-		if cfg.Webhook == "" {
-			return nil, fmt.Errorf("slack config requires webhook")
+		if cfg.Webhook == "" && cfg.Token == "" {
+			return nil, fmt.Errorf("slack config requires webhook (or a bot token for image posts)")
 		}
-		return NewSlack(cfg.Webhook, cfg.Channel), nil
+		return NewSlack(cfg.Webhook, cfg.Token, cfg.Channel), nil
 	case "telegram":
 		var cfg struct {
 			Token  string `json:"token"`
@@ -161,7 +165,9 @@ func Build(typ string, raw json.RawMessage) (Notifier, error) {
 		return NewTelegram(cfg.Token, cfg.ChatID), nil
 	case "lark":
 		var cfg struct {
-			Webhook string `json:"webhook"`
+			Webhook   string `json:"webhook"`
+			AppID     string `json:"app_id"`
+			AppSecret string `json:"app_secret"`
 		}
 		if err := json.Unmarshal(raw, &cfg); err != nil {
 			return nil, fmt.Errorf("lark config: %w", err)
@@ -169,7 +175,7 @@ func Build(typ string, raw json.RawMessage) (Notifier, error) {
 		if cfg.Webhook == "" {
 			return nil, fmt.Errorf("lark config requires webhook")
 		}
-		return NewLark(cfg.Webhook), nil
+		return NewLark(cfg.Webhook, cfg.AppID, cfg.AppSecret), nil
 	default:
 		return nil, fmt.Errorf("unknown channel type %q", typ)
 	}
@@ -235,18 +241,38 @@ func IsTerminalKind(kind string) bool {
 }
 
 // Slack renders Block Kit: colored-attachment style with mrkdwn fields
-// and a mempool.space link on the txhash. channel overrides the webhook's
-// bound channel (supported by legacy incoming webhooks).
+// and a mempool.space link on the txhash. With a bot token configured,
+// case-graph images are uploaded via the Web API and posted with the
+// text as the file comment; without one, messages go through the
+// incoming webhook text-only. channel overrides the target channel
+// (a channel ID like C0123456789 with a token, or a #name for legacy
+// incoming webhooks).
 type Slack struct {
 	webhook string
+	token   string
 	channel string
 }
 
-func NewSlack(webhook, channel string) *Slack { return &Slack{webhook: webhook, channel: channel} }
+func NewSlack(webhook, token, channel string) *Slack {
+	return &Slack{webhook: webhook, token: token, channel: channel}
+}
 
 func (s *Slack) Name() string { return "slack" }
 
 func (s *Slack) Send(ctx context.Context, msg Message) error {
+	if len(msg.PNG) > 0 && s.token != "" {
+		if err := s.sendImage(ctx, msg); err != nil {
+			slog.Warn("slack image post failed; falling back to webhook", "err", err)
+		} else {
+			return nil
+		}
+	}
+	return s.sendWebhook(ctx, msg)
+}
+
+// slackText renders the mrkdwn body shared by the webhook card and the
+// image-file comment: headline (txids linked) plus labeled fields.
+func slackText(msg Message) string {
 	var b strings.Builder
 	for _, f := range msg.fields() {
 		v := f[1]
@@ -268,6 +294,11 @@ func (s *Slack) Send(ctx context.Context, msg Message) error {
 	headline = hexTxRe.ReplaceAllStringFunc(headline, func(m string) string {
 		return linkTx(strings.ToLower(m))
 	})
+	return strings.TrimSpace(headline + "\n" + b.String())
+}
+
+func (s *Slack) sendWebhook(ctx context.Context, msg Message) error {
+	text := slackText(msg)
 	color := "#bf616a"
 	if IsTerminalKind(msg.Kind) {
 		color = "#a3be8c"
@@ -281,14 +312,8 @@ func (s *Slack) Send(ctx context.Context, msg Message) error {
 		},
 		map[string]any{
 			"type": "section",
-			"text": map[string]string{"type": "mrkdwn", "text": strings.TrimSpace(headline)},
+			"text": map[string]string{"type": "mrkdwn", "text": text},
 		},
-	}
-	if fields := strings.TrimRight(b.String(), "\n"); fields != "" {
-		blocks = append(blocks, map[string]any{
-			"type": "section",
-			"text": map[string]string{"type": "mrkdwn", "text": fields},
-		})
 	}
 	payload := map[string]any{
 		"attachments": []any{
@@ -315,6 +340,9 @@ func NewTelegram(token, chat string) *Telegram { return &Telegram{token: token, 
 func (t *Telegram) Name() string { return "telegram" }
 
 func (t *Telegram) Send(ctx context.Context, msg Message) error {
+	if len(msg.PNG) > 0 {
+		return t.sendPhoto(ctx, msg)
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "<b>bitracer · %s</b>\n", kindLabel(msg))
 	fmt.Fprintf(&b, "<b>%s</b>\n", escapeHTML(msg.Headline))
@@ -329,14 +357,31 @@ func (t *Telegram) Send(ctx context.Context, msg Message) error {
 }
 
 // Lark renders an interactive card with markdown elements and a
-// mempool.space link.
-type Lark struct{ webhook string }
+// mempool.space link. With app_id/app_secret configured, case-graph
+// images are uploaded to Lark and embedded in the card; without them,
+// cards are text-only.
+type Lark struct {
+	webhook   string
+	appID     string
+	appSecret string
+}
 
-func NewLark(webhook string) *Lark { return &Lark{webhook: webhook} }
+func NewLark(webhook, appID, appSecret string) *Lark {
+	return &Lark{webhook: webhook, appID: appID, appSecret: appSecret}
+}
 
 func (l *Lark) Name() string { return "lark" }
 
 func (l *Lark) Send(ctx context.Context, msg Message) error {
+	imgKey := ""
+	if len(msg.PNG) > 0 && l.appID != "" && l.appSecret != "" {
+		key, err := l.uploadImage(ctx, msg.PNG)
+		if err == nil {
+			imgKey = key
+		} else {
+			slog.Warn("lark image upload failed; sending text card", "err", err)
+		}
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "**%s**\n", msg.Headline)
 	for _, f := range msg.fields() {
@@ -349,6 +394,20 @@ func (l *Lark) Send(ctx context.Context, msg Message) error {
 	if IsTerminalKind(msg.Kind) {
 		template = "green"
 	}
+	elements := []any{
+		map[string]string{"tag": "markdown", "content": strings.TrimSpace(b.String())},
+	}
+	if imgKey != "" {
+		elements = append(elements, map[string]any{
+			"tag":     "img",
+			"img_key": imgKey,
+			"alt":     map[string]string{"tag": "plain_text", "content": "case graph"},
+		})
+	}
+	elements = append(elements,
+		map[string]any{"tag": "hr"},
+		map[string]string{"tag": "plain_text", "content": "sent by bitracer"},
+	)
 	payload := map[string]any{
 		"msg_type": "interactive",
 		"card": map[string]any{
@@ -356,11 +415,7 @@ func (l *Lark) Send(ctx context.Context, msg Message) error {
 				"title":    map[string]string{"tag": "plain_text", "content": truncate("bitracer · "+kindLabel(msg), 100)},
 				"template": template,
 			},
-			"elements": []any{
-				map[string]string{"tag": "markdown", "content": strings.TrimSpace(b.String())},
-				map[string]any{"tag": "hr"},
-				map[string]string{"tag": "plain_text", "content": "sent by bitracer"},
-			},
+			"elements": elements,
 		},
 	}
 	return postJSON(ctx, l.webhook, payload)
