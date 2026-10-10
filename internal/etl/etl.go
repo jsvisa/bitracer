@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"strconv"
 	"sync"
 	"time"
@@ -87,6 +88,12 @@ func (e *ETL) SyncBlocks(ctx context.Context) error {
 	if e.startBlock > start {
 		start = e.startBlock
 	}
+	if start > info.Blocks {
+		return nil
+	}
+	total := info.Blocks - start + 1
+	began := time.Now()
+	slog.Info("block sync started", "from", start, "to", info.Blocks, "blocks", total)
 	for h := start; h <= info.Blocks; {
 		hash, err := e.rpc.BlockHash(ctx, h)
 		if err != nil {
@@ -123,10 +130,25 @@ func (e *ETL) SyncBlocks(ctx context.Context) error {
 			return err
 		}
 		if h%1000 == 0 {
-			slog.Info("synced", "height", h)
+			done := h - start + 1
+			secs := time.Since(began).Seconds()
+			if secs <= 0 {
+				secs = 0.001
+			}
+			bps := float64(done) / secs
+			eta := time.Duration(float64(total-done)/bps * float64(time.Second)).Round(time.Second)
+			slog.Info("sync progress",
+				"height", h,
+				"done", done,
+				"total", total,
+				"pct", fmt.Sprintf("%.1f%%", float64(done)*100/float64(total)),
+				"blocks_per_sec", math.Round(bps*100)/100,
+				"eta", eta)
 		}
 		h++
 	}
+	slog.Info("block sync caught up", "height", info.Blocks, "blocks", total,
+		"elapsed", time.Since(began).Round(time.Second))
 	return nil
 }
 
