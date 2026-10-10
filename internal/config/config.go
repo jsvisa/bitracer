@@ -25,6 +25,12 @@ type Config struct {
 	FaninCount           int
 	DecayPct             int
 	SeedLabels           string
+	BotLLMURL            string
+	BotLLMKey            string
+	BotLLMModel          string
+	BotTelegramToken     string
+	BotTelegramChats     string
+	BotAdminChats        string
 }
 
 func Load() Config {
@@ -45,6 +51,12 @@ func Load() Config {
 		FaninCount:           int(envInt("BITRACER_FANIN_COUNT", 5)),
 		DecayPct:             int(envInt("BITRACER_DECAY_PCT", 1)),
 		SeedLabels:           env("BITRACER_SEED_LABELS", ""),
+		BotLLMURL:            env("BITRACER_BOT_LLM_URL", "https://api.openai.com/v1"),
+		BotLLMKey:            env("BITRACER_BOT_LLM_KEY", ""),
+		BotLLMModel:          env("BITRACER_BOT_LLM_MODEL", "gpt-4o-mini"),
+		BotTelegramToken:     env("BITRACER_BOT_TELEGRAM_TOKEN", ""),
+		BotTelegramChats:     env("BITRACER_BOT_TELEGRAM_CHATS", ""),
+		BotAdminChats:        env("BITRACER_BOT_ADMIN_CHATS", ""),
 	}
 }
 

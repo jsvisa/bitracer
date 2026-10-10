@@ -14,6 +14,7 @@ import (
 	"syscall"
 
 	"github.com/jsvisa/bitracer/internal/api"
+	"github.com/jsvisa/bitracer/internal/bot"
 	"github.com/jsvisa/bitracer/internal/btc"
 	"github.com/jsvisa/bitracer/internal/config"
 	"github.com/jsvisa/bitracer/internal/etl"
@@ -121,7 +122,17 @@ Environment:
   BITRACER_DECAY_PCT (stop branch outputs below this %% of the case's largest
                       seed output, default 1; 0 = off),
   BITRACER_SEED_LABELS (JSON file of known entities to preload:
-                        {"addr": {"label": "...", "kind": "cex|mixer|..."}})
+                        {"addr": {"label": "...", "kind": "cex|mixer|..."}}),
+
+Telegram bot (optional; enabled when token + LLM key are set):
+  BITRACER_BOT_TELEGRAM_TOKEN  bot token from @BotFather
+  BITRACER_BOT_TELEGRAM_CHATS  comma-separated chat ids allowed to ask;
+                               defaults to telegram notify-channel chat_ids
+  BITRACER_BOT_ADMIN_CHATS     comma-separated chat ids allowed to run write
+                               actions (create/pause cases, terminal marks, ...)
+  BITRACER_BOT_LLM_URL         OpenAI-compatible base url (default https://api.openai.com/v1)
+  BITRACER_BOT_LLM_KEY         API key for the LLM
+  BITRACER_BOT_LLM_MODEL       model name (default gpt-4o-mini)
 `)
 }
 
@@ -234,6 +245,18 @@ func runServe(ctx context.Context, cfg config.Config, args []string) {
 			slog.Error("labeler exited", "err", err)
 		}
 	}()
+
+	if bot.Enabled(cfg) {
+		b := bot.New(ctx, st, cfg)
+		slog.Info("telegram bot enabled", "model", cfg.BotLLMModel, "llm_url", cfg.BotLLMURL)
+		go func() {
+			if err := b.Run(ctx); err != nil && ctx.Err() == nil {
+				slog.Error("bot exited", "err", err)
+			}
+		}()
+	} else {
+		slog.Info("telegram bot disabled (set BITRACER_BOT_TELEGRAM_TOKEN + BITRACER_BOT_LLM_KEY to enable)")
+	}
 
 	srv := &http.Server{
 		Addr:    cfg.Listen,
