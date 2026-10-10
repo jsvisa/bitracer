@@ -122,6 +122,30 @@ manual pins):
 
 Entries with a `kind` are terminal stops; `"kind": ""` is attribution only.
 
+### Telegram bot (two-way chat)
+
+`serve` (and `run`) can run an LLM assistant inside your Telegram alert chats:
+ask "where are case 1's funds parked?", "show case 2's movement history",
+"what is address bc1q…?", "indexer status" — the bot answers from the live
+store via tool calls to an OpenAI-compatible LLM. Admin chats can also make
+changes: create/pause cases, add seed txs, mark txs/addresses terminal, send
+test alerts.
+
+```
+BITRACER_BOT_TELEGRAM_TOKEN  bot token from @BotFather
+BITRACER_BOT_TELEGRAM_CHATS  chat ids allowed to ask (defaults to the chat_ids
+                             of configured telegram notify channels)
+BITRACER_BOT_ADMIN_CHATS     chat ids allowed to run write actions
+BITRACER_BOT_LLM_URL         OpenAI-compatible base url (default https://api.openai.com/v1)
+BITRACER_BOT_LLM_KEY         LLM API key
+BITRACER_BOT_LLM_MODEL       model (default gpt-4o-mini)
+```
+
+The bot is enabled when token + LLM key are set. It answers read questions
+only in allowed chats, and write actions only in admin chats — non-allowed
+chats are ignored. Note the bot must be the only consumer of its token's
+`getUpdates` (remove any webhook first).
+
 ### Dashboard
 
 - create a **case** (name, optional min BTC) and pick which notify channels it uses
