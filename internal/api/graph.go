@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/jsvisa/bitracer/internal/btc"
 	"github.com/jsvisa/bitracer/internal/casegraph"
 	"github.com/jsvisa/bitracer/internal/notify"
 )
@@ -61,7 +62,7 @@ func (s *Server) graphRoots(ctx context.Context, q url.Values) ([]string, error)
 	if txid == "" {
 		return nil, errors.New("case_id or txid required")
 	}
-	if !isTxid(txid) {
+	if !btc.IsTxid(txid) {
 		return nil, errors.New("txid must be 64 hex chars")
 	}
 	return []string{txid}, nil

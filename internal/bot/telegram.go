@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/jsvisa/bitracer/internal/httpx"
 )
 
 const telegramAPI = "https://api.telegram.org"
@@ -98,37 +100,25 @@ func (t *Telegram) Typing(ctx context.Context, chatID int64) {
 }
 
 func (t *Telegram) get(ctx context.Context, path string, out any) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		telegramAPI+"/bot"+t.token+path, nil)
-	if err != nil {
-		return err
-	}
-	return t.do(req, out)
+	return t.call(ctx, http.MethodGet, path, nil, out)
 }
 
 func (t *Telegram) post(ctx context.Context, path string, payload any) error {
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		telegramAPI+"/bot"+t.token+path, strings.NewReader(string(body)))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	return t.do(req, nil)
+	return t.call(ctx, http.MethodPost, path, payload, nil)
 }
 
-func (t *Telegram) do(req *http.Request, out any) error {
-	resp, err := t.hc.Do(req)
+func (t *Telegram) call(ctx context.Context, method, path string, payload, out any) error {
+	status, raw, err := httpx.Request{
+		Method: method,
+		URL:    telegramAPI + "/bot" + t.token + path,
+		Body:   payload,
+	}.Do(ctx, t.hc)
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
 	var r tgResponse
-	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
-		return fmt.Errorf("telegram http %d: %w", resp.StatusCode, err)
+	if err := json.Unmarshal(raw, &r); err != nil {
+		return fmt.Errorf("telegram http %d: %w", status, err)
 	}
 	if !r.OK {
 		return fmt.Errorf("telegram: %s", r.Description)

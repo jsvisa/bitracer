@@ -106,11 +106,15 @@ export const api = {
     req<Channel>('/api/channels', { method: 'POST', body: JSON.stringify({ name, type, config }) }),
   testChannel: (type: string, config: Record<string, string>) =>
     req<void>('/api/channels/test', { method: 'POST', body: JSON.stringify({ type, config }) }),
-  deleteChannel: (channelID: number) => req<void>(`/api/channels/${channelID}`, { method: 'DELETE' }),
+  deleteChannel: (channelID: number) =>
+    req<void>(`/api/channels/${channelID}`, { method: 'DELETE' }),
 
   listCaseChannels: (id: number) => req<Channel[]>(`/api/cases/${id}/channels`),
   setCaseChannels: (id: number, channelIDs: number[]) =>
-    req<void>(`/api/cases/${id}/channels`, { method: 'PUT', body: JSON.stringify({ channel_ids: channelIDs }) }),
+    req<void>(`/api/cases/${id}/channels`, {
+      method: 'PUT',
+      body: JSON.stringify({ channel_ids: channelIDs }),
+    }),
 
   listAlerts: (caseID?: number) =>
     req<Alert[]>(`/api/alerts?limit=200${caseID ? `&case_id=${caseID}` : ''}`),

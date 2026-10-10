@@ -14,6 +14,8 @@ import (
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/basicfont"
 	"golang.org/x/image/math/fixed"
+
+	"github.com/jsvisa/bitracer/internal/btc"
 )
 
 // Dashboard theme colors.
@@ -145,13 +147,13 @@ func collapse(g *Graph) ([]flowNode, []flowEdge) {
 		switch {
 		case len(ins) == 0:
 			// seed tx: keep the tx card as the flow's origin
-			addNode(tx, &flowNode{id: tx, label: ascii(shortTxid(txid)), hot: rootSet[tx]})
+			addNode(tx, &flowNode{id: tx, label: ascii(btc.ShortTxid(txid)), hot: rootSet[tx]})
 			for _, o := range outs {
 				add(flowEdge{from: tx, to: o.peer, value: o.value, height: o.height})
 			}
 		case len(outs) == 0:
 			// dead end (all outputs pruned): keep the tx card
-			addNode(tx, &flowNode{id: tx, label: ascii(shortTxid(txid))})
+			addNode(tx, &flowNode{id: tx, label: ascii(btc.ShortTxid(txid))})
 			for _, i := range ins {
 				add(flowEdge{from: i.peer, to: tx, value: i.value, height: i.height})
 			}
@@ -236,9 +238,9 @@ func cardSize(n flowNode) (int, int) {
 }
 
 type placed struct {
-	n       flowNode
-	x, y    int // center
-	w, h    int
+	n    flowNode
+	x, y int // center
+	w, h int
 }
 
 // layout stacks each rank column top-down and returns positions plus the
@@ -349,11 +351,11 @@ func (c canvas) bezier(x0, y0, x1, y1 float64, col color.Color) (mx, my, ex, ey 
 			lx, ly = px, py
 		}
 	}
-	ex, ey = x1 - lx, y1 - ly
+	ex, ey = x1-lx, y1-ly
 	if n := math.Hypot(ex, ey); n > 0 {
 		ex, ey = ex/n, ey/n
 	}
-	return mx, (y0+y1)/2, ex, ey
+	return mx, (y0 + y1) / 2, ex, ey
 }
 
 // arrow fills a triangle pointing along (dx, dy) with its tip at (x, y).

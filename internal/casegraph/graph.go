@@ -42,8 +42,8 @@ type Edge struct {
 }
 
 type Graph struct {
-	Nodes []Node `json:"nodes"`
-	Edges []Edge `json:"edges"`
+	Nodes []Node   `json:"nodes"`
+	Edges []Edge   `json:"edges"`
 	Txids []string `json:"txids"`
 }
 
@@ -186,7 +186,7 @@ func loadOutpoints(ctx context.Context, st *store.Store, txids []string, nodes m
 		spentVouts = append(spentVouts, o.Vout)
 		if !attached[o.Txid] {
 			txNode := "t:" + o.Txid
-			nodes[txNode] = &Node{ID: txNode, Type: "tx", Label: shortTxid(o.Txid)}
+			nodes[txNode] = &Node{ID: txNode, Type: "tx", Label: btc.ShortTxid(o.Txid)}
 			aNode := "a:" + addrKey(o.Address)
 			eid := txNode + "->" + aNode
 			if prev, ok := edges[eid]; ok {
@@ -219,7 +219,7 @@ func attachOutputs(ctx context.Context, st *store.Store, txids []string, nodes m
 			}
 			txNode := "t:" + o.Txid
 			if _, ok := nodes[txNode]; !ok {
-				nodes[txNode] = &Node{ID: txNode, Type: "tx", Label: shortTxid(o.Txid)}
+				nodes[txNode] = &Node{ID: txNode, Type: "tx", Label: btc.ShortTxid(o.Txid)}
 			}
 			aNode := "a:" + addrKey(o.Address)
 			eid := txNode + "->" + aNode
@@ -271,7 +271,7 @@ func liveTxGraph(ctx context.Context, rpc RawTxSource, txid string, nodes map[st
 		return nil
 	}
 	tNode := "t:" + txid
-	nodes[tNode] = &Node{ID: tNode, Type: "tx", Label: shortTxid(txid)}
+	nodes[tNode] = &Node{ID: tNode, Type: "tx", Label: btc.ShortTxid(txid)}
 	for _, vout := range tx.Vout {
 		if minSats > 0 && btc.Sats(vout.Value) < minSats {
 			continue
@@ -285,13 +285,6 @@ func liveTxGraph(ctx context.Context, rpc RawTxSource, txid string, nodes map[st
 		nodes[aNode] = &Node{ID: aNode, Type: "address", Label: shortAddr(addr), Value: btc.SatsToBTC(btc.Sats(vout.Value))}
 	}
 	return nil
-}
-
-func shortTxid(s string) string {
-	if len(s) <= 12 {
-		return s
-	}
-	return s[:10] + "…"
 }
 
 func shortAddr(s string) string {
@@ -376,7 +369,7 @@ func SnapshotPNG(ctx context.Context, caseID int64) ([]byte, error) {
 }
 
 var (
-	chromeOnce sync.Once
+	chromeOnce  sync.Once
 	chromeFound string
 )
 
