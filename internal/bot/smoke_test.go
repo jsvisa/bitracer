@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestSmoke(t *testing.T) {
@@ -26,6 +27,22 @@ func TestSmoke(t *testing.T) {
 	if len(chunks) != 2 || chunks[0] != strings.Repeat("x", 3900) ||
 		chunks[1] != strings.Repeat("y", 200) {
 		t.Fatalf("newline split: %d chunks", len(chunks))
+	}
+	// multibyte: byte-4000 boundary falls inside a 3-byte rune; every chunk
+	// must stay valid UTF-8 or Telegram rejects it
+	chunks = splitChunks(strings.Repeat("中", 3000), 4000)
+	total = 0
+	for _, c := range chunks {
+		if !utf8.ValidString(c) {
+			t.Fatalf("invalid utf-8 chunk of %d bytes", len(c))
+		}
+		if len(c) > 4000 {
+			t.Fatalf("chunk too long: %d", len(c))
+		}
+		total += len(c)
+	}
+	if total != 9000 {
+		t.Fatalf("multibyte chunks lost bytes: %d", total)
 	}
 	if got := stripMention("@BitBot where are the funds? @bitbot", "bitbot"); got != "where are the funds?" {
 		t.Fatalf("stripMention: %q", got)

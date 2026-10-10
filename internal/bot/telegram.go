@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const telegramAPI = "https://api.telegram.org"
@@ -147,6 +148,10 @@ func splitChunks(s string, n int) []string {
 		cut := strings.LastIndex(s[:n], "\n")
 		if cut < n/2 {
 			cut = n
+		}
+		// Never split a UTF-8 rune: back off to the rune boundary.
+		for cut > 0 && !utf8.RuneStart(s[cut]) {
+			cut--
 		}
 		out = append(out, s[:cut])
 		s = strings.TrimPrefix(s[cut:], "\n")

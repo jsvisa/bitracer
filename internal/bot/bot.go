@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jsvisa/bitracer/internal/config"
@@ -15,6 +16,9 @@ import (
 )
 
 var errAdminOnly = errors.New("this action is only available to admin chats")
+
+// answerTimeout bounds one question's whole LLM tool loop.
+const answerTimeout = 3 * time.Minute
 
 // Bot answers Telegram questions about bitracer state via an LLM with
 // tool access to the store. Read questions are answered in any allowed
@@ -70,8 +74,23 @@ func New(ctx context.Context, st *store.Store, cfg config.Config) *Bot {
 	return b
 }
 
-// Run long-polls Telegram until the context is cancelled.
+// Run long-polls Telegram until the context is cancelled. Questions are
+// answered concurrently across chats but serialized within one chat, so
+// replies keep their order.
 func (b *Bot) Run(ctx context.Context) error {
+	b.skipBacklog(ctx)
+	var mu sync.Mutex
+	chatLocks := map[int64]*sync.Mutex{}
+	lockFor := func(chat int64) *sync.Mutex {
+		mu.Lock()
+		defer mu.Unlock()
+		l, ok := chatLocks[chat]
+		if !ok {
+			l = &sync.Mutex{}
+			chatLocks[chat] = l
+		}
+		return l
+	}
 	for {
 		ups, err := b.tg.Updates(ctx, b.offset+1, 25)
 		if err != nil {
@@ -93,8 +112,36 @@ func (b *Bot) Run(ctx context.Context) error {
 			if u.Message == nil || strings.TrimSpace(u.Message.Text) == "" {
 				continue
 			}
-			b.handle(ctx, u.Message)
+			m, l := u.Message, lockFor(u.Message.Chat.ID)
+			mctx, cancel := context.WithTimeout(ctx, answerTimeout)
+			go func() {
+				defer cancel()
+				defer l.Unlock()
+				// A panic here must not take down serve.
+				defer func() {
+					if p := recover(); p != nil {
+						slog.Error("bot: panic handling message", "chat_id", m.Chat.ID, "panic", p)
+					}
+				}()
+				l.Lock()
+				b.handle(mctx, m)
+			}()
 		}
+	}
+}
+
+// skipBacklog advances the update offset past everything queued before
+// startup, so a fresh deploy (or one that was down for a while) does not
+// replay stale questions — possibly re-running write actions.
+func (b *Bot) skipBacklog(ctx context.Context) {
+	ups, err := b.tg.Updates(ctx, -1, 0)
+	if err != nil {
+		slog.Warn("bot: backlog check failed; consuming from the oldest queued update", "err", err)
+		return
+	}
+	if len(ups) > 0 {
+		b.offset = ups[len(ups)-1].UpdateID
+		slog.Info("bot: skipping queued backlog", "last_update_id", b.offset)
 	}
 }
 

@@ -143,7 +143,10 @@ BITRACER_BOT_LLM_MODEL       model (default gpt-4o-mini)
 
 The bot is enabled when token + LLM key are set. It answers read questions
 only in allowed chats, and write actions only in admin chats — non-allowed
-chats are ignored. Note the bot must be the only consumer of its token's
+chats are ignored. In private chats it answers every message; in groups only
+`@mentions` of the bot (the handle is stripped before answering). Updates
+queued before startup are skipped, so redeploys don't replay stale questions.
+Note the bot must be the only consumer of its token's
 `getUpdates` (remove any webhook first).
 
 ### Dashboard
