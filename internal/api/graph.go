@@ -180,7 +180,7 @@ func (s *Server) graphRoots(ctx context.Context, q url.Values) ([]string, error)
 	if txid == "" {
 		return nil, errors.New("case_id or txid required")
 	}
-	if !isTxid(txid) {
+	if !btc.IsTxid(txid) {
 		return nil, errors.New("txid must be 64 hex chars")
 	}
 	return []string{txid}, nil
@@ -212,7 +212,7 @@ func (s *Server) loadOutpoints(ctx context.Context, txids []string, nodes map[st
 		spentVouts = append(spentVouts, o.Vout)
 		if !attached[o.Txid] {
 			txNode := "t:" + o.Txid
-			nodes[txNode] = &graphNode{ID: txNode, Type: "tx", Label: shortTxid(o.Txid)}
+			nodes[txNode] = &graphNode{ID: txNode, Type: "tx", Label: btc.ShortTxid(o.Txid)}
 			aNode := "a:" + addrKey(o.Address)
 			eid := txNode + "->" + aNode
 			if prev, ok := edges[eid]; ok {
@@ -245,7 +245,7 @@ func (s *Server) attachOutputs(ctx context.Context, txids []string, nodes map[st
 			}
 			txNode := "t:" + o.Txid
 			if _, ok := nodes[txNode]; !ok {
-				nodes[txNode] = &graphNode{ID: txNode, Type: "tx", Label: shortTxid(o.Txid)}
+				nodes[txNode] = &graphNode{ID: txNode, Type: "tx", Label: btc.ShortTxid(o.Txid)}
 			}
 			aNode := "a:" + addrKey(o.Address)
 			eid := txNode + "->" + aNode
@@ -297,7 +297,7 @@ func (s *Server) liveTxGraph(ctx context.Context, txid string, nodes map[string]
 		return nil
 	}
 	tNode := "t:" + txid
-	nodes[tNode] = &graphNode{ID: tNode, Type: "tx", Label: shortTxid(txid)}
+	nodes[tNode] = &graphNode{ID: tNode, Type: "tx", Label: btc.ShortTxid(txid)}
 	for _, vout := range tx.Vout {
 		if minSats > 0 && btc.Sats(vout.Value) < minSats {
 			continue
@@ -311,13 +311,6 @@ func (s *Server) liveTxGraph(ctx context.Context, txid string, nodes map[string]
 		nodes[aNode] = &graphNode{ID: aNode, Type: "address", Label: shortAddr(addr), Value: btc.SatsToBTC(btc.Sats(vout.Value))}
 	}
 	return nil
-}
-
-func shortTxid(s string) string {
-	if len(s) <= 12 {
-		return s
-	}
-	return s[:10] + "…"
 }
 
 func shortAddr(s string) string {

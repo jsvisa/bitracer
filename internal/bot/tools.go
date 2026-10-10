@@ -461,7 +461,7 @@ func (b *Bot) dispatch(ctx context.Context, name, rawArgs string, chatID int64, 
 		if err = json.Unmarshal([]byte(rawArgs), &a); err != nil {
 			return fail(err)
 		}
-		if !isTxid(a.Txid) {
+		if !btc.IsTxid(a.Txid) {
 			return fail(fmt.Errorf("txid must be 64 hex chars"))
 		}
 		if err = st.AddCaseTx(ctx, a.CaseID, strings.ToLower(a.Txid)); err != nil {
@@ -541,19 +541,6 @@ func validTerminalKind(k string) bool {
 		return true
 	}
 	return false
-}
-
-func isTxid(s string) bool {
-	if len(s) != 64 {
-		return false
-	}
-	for _, c := range s {
-		isHex := c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F'
-		if !isHex {
-			return false
-		}
-	}
-	return true
 }
 
 // channelByID finds one channel by id (there is no direct getter in the store).

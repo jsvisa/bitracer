@@ -1,14 +1,14 @@
 package labels
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/jsvisa/bitracer/internal/httpx"
 )
 
 const (
@@ -70,27 +70,17 @@ func (b *Blocksec) Lookup(ctx context.Context, address string) (*Label, error) {
 	if b.apiKey == "" {
 		return nil, nil
 	}
-	body, err := json.Marshal(map[string]any{"chain_id": b.chainID, "address": address})
+	status, raw, err := httpx.Request{
+		URL:    b.url,
+		Body:   map[string]any{"chain_id": b.chainID, "address": address},
+		Header: map[string]string{"API-KEY": b.apiKey},
+		Limit:  1 << 20,
+	}.Do(ctx, b.hc)
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.url, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("API-KEY", b.apiKey)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := b.hc.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("blocksec http %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("blocksec http %d: %s", status, strings.TrimSpace(string(raw)))
 	}
 	var r blocksecResponse
 	if err := json.Unmarshal(raw, &r); err != nil {
