@@ -125,7 +125,7 @@ func (t *Telegram) do(req *http.Request, out any) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var r tgResponse
 	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
 		return fmt.Errorf("telegram http %d: %w", resp.StatusCode, err)

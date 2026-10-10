@@ -195,13 +195,6 @@ func FlipAddressTerminal(ctx context.Context, st *store.Store, addr, kind, entit
 	}
 }
 
-func short(s string) string {
-	if len(s) <= 12 {
-		return s
-	}
-	return s[:10] + "…"
-}
-
 // holdings maps the store's per-address fund summary into the message's
 // parking field; errors degrade to no parking line.
 func holdings(ctx context.Context, st *store.Store, caseID int64) []notify.Holding {

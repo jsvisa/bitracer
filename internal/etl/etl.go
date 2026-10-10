@@ -146,7 +146,7 @@ func (e *ETL) SyncBlocks(ctx context.Context) error {
 				secs = 0.001
 			}
 			bps := float64(done) / secs
-			eta := time.Duration(float64(total-done)/bps * float64(time.Second)).Round(time.Second)
+			eta := time.Duration(float64(total-done) / bps * float64(time.Second)).Round(time.Second)
 			slog.Info("sync progress",
 				"height", h,
 				"done", done,
@@ -282,8 +282,8 @@ func (e *ETL) afterSpend(ctx context.Context, m store.WatchedMatch, spenderTxid 
 		}
 	}
 	msg := notify.Message{
-		Kind:      kind,
-		CaseID:    m.CaseID,
+		Kind:   kind,
+		CaseID: m.CaseID,
 		Headline: fmt.Sprintf("%.2f BTC moved %s:%d -> spent by %s",
 			btc.SatsToBTC(m.ValueSats), m.Txid, m.Vout, spenderTxid),
 		Txid:      spenderTxid,
@@ -458,8 +458,8 @@ func (e *ETL) markFanout(ctx context.Context, m store.WatchedMatch, spenderTxid 
 		return nil
 	}
 	msg := notify.Message{
-		Kind:      "fanout",
-		CaseID:    m.CaseID,
+		Kind:   "fanout",
+		CaseID: m.CaseID,
 		Headline: fmt.Sprintf("%.2f BTC spent into fan-out tx %s — STOP (suspected mixer/coinjoin payout, not tracked further)",
 			btc.SatsToBTC(m.ValueSats), spenderTxid),
 		Txid:      spenderTxid,

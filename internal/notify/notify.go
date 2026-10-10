@@ -121,13 +121,6 @@ func shortTx(txid string) string {
 	return txid[:10] + "…"
 }
 
-func shortAddr(addr string) string {
-	if len(addr) <= 20 {
-		return addr
-	}
-	return addr[:8] + "…" + addr[len(addr)-6:]
-}
-
 type Notifier interface {
 	Name() string
 	Send(ctx context.Context, msg Message) error
@@ -205,7 +198,7 @@ func postJSON(ctx context.Context, url string, payload any) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("http %d", resp.StatusCode)
 	}

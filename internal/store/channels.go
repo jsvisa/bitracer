@@ -104,7 +104,7 @@ func (s *Store) SetCaseChannels(ctx context.Context, caseID int64, channelIDs []
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 	if len(ids) > 0 {
 		var found int
 		if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM channels WHERE id = ANY($1)`, ids).Scan(&found); err != nil {
