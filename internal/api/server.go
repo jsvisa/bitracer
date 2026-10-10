@@ -268,12 +268,20 @@ func (s *Server) addCaseTx(w http.ResponseWriter, r *http.Request) {
 	// verify the tx exists before tracking it, else the seed loop would retry
 	// a nonexistent txid forever
 	txid := strings.ToLower(b.Txid)
-	if _, err := s.rpc.RawTx(r.Context(), txid); err != nil {
+	tx, err := s.rpc.RawTx(r.Context(), txid)
+	if err != nil {
 		if btc.IsNotFound(err) {
 			writeErr(w, http.StatusBadRequest, errors.New("txid not found on chain (neither confirmed nor in mempool)"))
 			return
 		}
 		writeErr(w, http.StatusBadGateway, fmt.Errorf("bitcoind lookup failed: %w", err))
+		return
+	}
+	// confirmed seeds only: an unconfirmed seed can evaporate via RBF and
+	// leave phantom watching rows; spends are block-sync detected anyway, so
+	// tracking gains nothing before confirmation
+	if tx.BlockHeight == 0 {
+		writeErr(w, http.StatusConflict, errors.New("tx is unconfirmed; add it after confirmation"))
 		return
 	}
 	if err := s.st.AddCaseTx(r.Context(), id, txid); err != nil {
