@@ -98,11 +98,13 @@ func (s *Server) createCase(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("name required"))
 		return
 	}
-	if len(b.ChannelIDs) > 0 {
-		if err := s.st.ValidateChannelIDs(r.Context(), b.ChannelIDs); err != nil {
-			writeErr(w, http.StatusBadRequest, errors.New("unknown channel id in channel_ids"))
-			return
-		}
+	if len(b.ChannelIDs) == 0 {
+		writeErr(w, http.StatusBadRequest, errors.New("at least one notify channel must be bound to the case"))
+		return
+	}
+	if err := s.st.ValidateChannelIDs(r.Context(), b.ChannelIDs); err != nil {
+		writeErr(w, http.StatusBadRequest, errors.New("unknown channel id in channel_ids"))
+		return
 	}
 	var minSats *int64
 	if b.MinBTC != nil && *b.MinBTC > 0 {
@@ -121,11 +123,9 @@ func (s *Server) createCase(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	if len(b.ChannelIDs) > 0 {
-		if err := s.st.SetCaseChannels(r.Context(), c.ID, b.ChannelIDs); err != nil {
-			writeErr(w, http.StatusInternalServerError, err)
-			return
-		}
+	if err := s.st.SetCaseChannels(r.Context(), c.ID, b.ChannelIDs); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
 	}
 	writeJSON(w, http.StatusCreated, c)
 }
@@ -382,6 +382,10 @@ func (s *Server) setCaseChannels(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if len(b.ChannelIDs) == 0 {
+		writeErr(w, http.StatusBadRequest, errors.New("at least one notify channel must stay bound to the case"))
 		return
 	}
 	if err := s.st.SetCaseChannels(r.Context(), id, b.ChannelIDs); err != nil {
