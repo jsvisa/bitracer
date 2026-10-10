@@ -109,7 +109,7 @@ func (e *ETL) SyncBlocks(ctx context.Context) error {
 				return err
 			}
 		}
-		if err := e.processBlock(ctx, h, hash); err != nil {
+		if err := e.processBlock(ctx, h, hash, "spend"); err != nil {
 			if errors.Is(err, errReorgParent) {
 				if h < 2 {
 					return fmt.Errorf("parent mismatch at genesis-adjacent height %d", h)
@@ -152,7 +152,10 @@ func (e *ETL) SyncBlocks(ctx context.Context) error {
 	return nil
 }
 
-func (e *ETL) processBlock(ctx context.Context, height int64, hash string) error {
+// processBlock indexes one block and detects spends of watched outputs.
+// kind labels the resulting spend alerts: "spend" for the live forward sync,
+// "backfill" when replaying history (gap backfill / late catch-up).
+func (e *ETL) processBlock(ctx context.Context, height int64, hash, kind string) error {
 	blk, err := e.rpc.Block(ctx, hash)
 	if err != nil {
 		return err
@@ -505,55 +508,66 @@ func (e *ETL) SeedPendingCases(ctx context.Context) error {
 		return err
 	}
 	for _, seed := range seeds {
-		outs, err := e.st.OutputsForTxids(ctx, []string{seed.Txid})
-		if err != nil {
-			return err
+		// isolate: one failing seed must not stall the other cases' seeds
+		if err := e.seedOne(ctx, seed); err != nil {
+			slog.Error("case seed failed", "case", seed.CaseID, "txid", seed.Txid, "err", err)
 		}
-		height := int64(0)
-		if len(outs) == 0 {
-			tx, err := e.rpc.RawTx(ctx, seed.Txid)
-			if err != nil {
-				slog.Error("seed: source tx not found", "txid", seed.Txid, "err", err)
-				continue
-			}
-			height = tx.BlockHeight
-			if height == 0 && tx.BlockHash != "" {
-				if h, err := e.rpc.BlockHeaderHeight(ctx, tx.BlockHash); err == nil {
-					height = h
-				}
-			}
-			for _, vout := range tx.Vout {
-				outs = append(outs, store.IndexedOut{Txid: seed.Txid, Vout: int32(vout.N), Address: vout.ScriptPubKey.Address, ValueSats: btc.Sats(vout.Value)})
-			}
-		} else {
-			if h, err := e.st.TxHeight(ctx, seed.Txid); err == nil {
+	}
+	return nil
+}
+
+// seedOne seeds a single case tx. SetCaseTxSeeded runs last: a failure in the
+// gap-backfill registration or the historical catch-up leaves the seed
+// pending, so the whole flow (idempotently) retries on the next tick instead
+// of silently dropping that tx's walked path.
+func (e *ETL) seedOne(ctx context.Context, seed store.CaseSeed) error {
+	outs, err := e.st.OutputsForTxids(ctx, []string{seed.Txid})
+	if err != nil {
+		return err
+	}
+	height := int64(0)
+	if len(outs) == 0 {
+		tx, err := e.rpc.RawTx(ctx, seed.Txid)
+		if err != nil {
+			return fmt.Errorf("source tx not found: %w", err)
+		}
+		height = tx.BlockHeight
+		if height == 0 && tx.BlockHash != "" {
+			if h, err := e.rpc.BlockHeaderHeight(ctx, tx.BlockHash); err == nil {
 				height = h
 			}
 		}
-		if err := e.addWatchedFromTx(ctx, seed.CaseID, seed.MinSats, seed.DepthCap, seed.BranchCap, seed.Txid, outs, 0, height); err != nil {
-			return err
+		for _, vout := range tx.Vout {
+			outs = append(outs, store.IndexedOut{Txid: seed.Txid, Vout: int32(vout.N), Address: vout.ScriptPubKey.Address, ValueSats: btc.Sats(vout.Value)})
 		}
-		if err := e.st.SetCaseTxSeeded(ctx, seed.CaseID, seed.Txid); err != nil {
-			return err
-		}
-		msg := notify.Message{
-			Kind:     "seed",
-			CaseID:   seed.CaseID,
-			Headline: "now tracking " + seed.Txid,
-			Txid:     seed.Txid,
-		}
-		if err := alerts.Emit(ctx, e.st, store.Alert{CaseID: seed.CaseID, Txid: seed.Txid, Kind: "seed"},
-			e.withParking(ctx, seed.CaseID, msg)); err != nil {
-			return err
-		}
-		slog.Info("seeded case tx", "case", seed.CaseID, "txid", seed.Txid, "outputs", len(outs))
-		if err := e.seedGapBackfill(ctx, seed.CaseID, height); err != nil {
-			return err
-		}
-		if err := e.catchUpCase(ctx, seed.CaseID, seed.MinSats, seed.DepthCap, seed.BranchCap); err != nil {
-			return err
+	} else {
+		if h, err := e.st.TxHeight(ctx, seed.Txid); err == nil {
+			height = h
 		}
 	}
+	if err := e.addWatchedFromTx(ctx, seed.CaseID, seed.MinSats, seed.DepthCap, seed.BranchCap, seed.Txid, outs, 0, height); err != nil {
+		return err
+	}
+	msg := notify.Message{
+		Kind:     "seed",
+		CaseID:   seed.CaseID,
+		Headline: "now tracking " + seed.Txid,
+		Txid:     seed.Txid,
+	}
+	if err := alerts.Emit(ctx, e.st, store.Alert{CaseID: seed.CaseID, Txid: seed.Txid, Kind: "seed"},
+		e.withParking(ctx, seed.CaseID, msg)); err != nil {
+		return err
+	}
+	if err := e.seedGapBackfill(ctx, seed.CaseID, height); err != nil {
+		return err
+	}
+	if err := e.catchUpCase(ctx, seed.CaseID, seed.MinSats, seed.DepthCap, seed.BranchCap); err != nil {
+		return err
+	}
+	if err := e.st.SetCaseTxSeeded(ctx, seed.CaseID, seed.Txid); err != nil {
+		return err
+	}
+	slog.Info("seeded case tx", "case", seed.CaseID, "txid", seed.Txid, "outputs", len(outs))
 	return nil
 }
 
@@ -645,7 +659,7 @@ func (e *ETL) runBackfill(ctx context.Context, caseID int64) {
 			// all block inserts are idempotent upserts.
 			slog.Warn("backfill: stored hash mismatch, overwriting", "case", caseID, "height", h)
 		}
-		if err := e.processBlock(ctx, h, hash); err != nil {
+		if err := e.processBlock(ctx, h, hash, "backfill"); err != nil {
 			slog.Error("backfill: block failed", "case", caseID, "height", h, "err", err)
 			return
 		}
@@ -721,7 +735,8 @@ func (e *ETL) catchUpCase(ctx context.Context, caseID int64, minSats int64, dept
 				continue
 			}
 			progress = true
-			if err := e.afterSpend(ctx, m, edge.Spender, outsByTx[edge.Spender], edge.Height, "spend"); err != nil {
+			// historical replay: this edge happened before the case tracked it
+			if err := e.afterSpend(ctx, m, edge.Spender, outsByTx[edge.Spender], edge.Height, "backfill"); err != nil {
 				return err
 			}
 		}

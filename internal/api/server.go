@@ -265,11 +265,22 @@ func (s *Server) addCaseTx(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, err)
 		return
 	}
-	if err := s.st.AddCaseTx(r.Context(), id, strings.ToLower(b.Txid)); err != nil {
+	// verify the tx exists before tracking it, else the seed loop would retry
+	// a nonexistent txid forever
+	txid := strings.ToLower(b.Txid)
+	if _, err := s.rpc.RawTx(r.Context(), txid); err != nil {
+		if btc.IsNotFound(err) {
+			writeErr(w, http.StatusBadRequest, errors.New("txid not found on chain (neither confirmed nor in mempool)"))
+			return
+		}
+		writeErr(w, http.StatusBadGateway, fmt.Errorf("bitcoind lookup failed: %w", err))
+		return
+	}
+	if err := s.st.AddCaseTx(r.Context(), id, txid); err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]string{"added": b.Txid})
+	writeJSON(w, http.StatusCreated, map[string]string{"added": txid})
 }
 
 func (s *Server) deleteCaseTx(w http.ResponseWriter, r *http.Request) {

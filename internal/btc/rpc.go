@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -37,6 +38,23 @@ type rpcError struct {
 	Message string `json:"message"`
 }
 
+// RPCError is a bitcoind JSON-RPC error, keeping the numeric code so callers
+// can distinguish "not found" (-5) from transient failures.
+type RPCError struct {
+	Method  string
+	Code    int
+	Message string
+}
+
+func (e *RPCError) Error() string { return fmt.Sprintf("%s: %s", e.Method, e.Message) }
+
+// IsNotFound reports whether err is a bitcoind RPC error for a missing item
+// (code -5: unknown txid/block/...).
+func IsNotFound(err error) bool {
+	var re *RPCError
+	return errors.As(err, &re) && re.Code == -5
+}
+
 func (c *Client) Call(ctx context.Context, method string, params ...any) (json.RawMessage, error) {
 	body, err := json.Marshal(rpcRequest{JSONRPC: "1.0", ID: 1, Method: method, Params: params})
 	if err != nil {
@@ -63,7 +81,7 @@ func (c *Client) Call(ctx context.Context, method string, params ...any) (json.R
 		return nil, err
 	}
 	if rr.Error != nil {
-		return nil, fmt.Errorf("%s: %s", method, rr.Error.Message)
+		return nil, &RPCError{Method: method, Code: rr.Error.Code, Message: rr.Error.Message}
 	}
 	return rr.Result, nil
 }
