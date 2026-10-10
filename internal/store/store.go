@@ -99,7 +99,11 @@ var migrateStmts = []string{
 		)`,
 	`CREATE INDEX IF NOT EXISTS idx_watched_outpoint ON watched_outputs (txid, vout)`,
 	`CREATE INDEX IF NOT EXISTS idx_watched_status ON watched_outputs (case_id, status)`,
-	`CREATE INDEX IF NOT EXISTS idx_watched_parent ON watched_outputs (txid) WHERE height = 0`,
+	// one-shot cleanup: idx_watched_parent had no query using it
+	`DROP INDEX IF EXISTS idx_watched_parent`,
+	// one-shot cleanup: unconfirmed seeds are rejected at the API, so height-0
+	// watched rows can only be evaporated (RBF) phantoms
+	`DELETE FROM watched_outputs WHERE height = 0`,
 	`CREATE TABLE IF NOT EXISTS addresses (
 			address TEXT PRIMARY KEY,
 			label TEXT NOT NULL DEFAULT '',

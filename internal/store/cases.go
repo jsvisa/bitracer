@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type Case struct {
@@ -96,9 +97,20 @@ func (s *Store) DeleteCase(ctx context.Context, id int64) error {
 }
 
 func (s *Store) AddCaseTx(ctx context.Context, caseID int64, txid string) error {
-	_, err := s.pool.Exec(ctx,
+	tag, err := s.pool.Exec(ctx,
 		`INSERT INTO case_txs (case_id, txid) VALUES ($1, $2) ON CONFLICT DO NOTHING`, caseID, txid)
-	return err
+	if err != nil {
+		// case deleted between the API's existence check and the insert
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+			return ErrNotFound
+		}
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrDuplicate
+	}
+	return nil
 }
 
 func (s *Store) ListCaseTxs(ctx context.Context, caseID int64) ([]CaseTx, error) {

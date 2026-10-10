@@ -265,11 +265,37 @@ func (s *Server) addCaseTx(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, err)
 		return
 	}
-	if err := s.st.AddCaseTx(r.Context(), id, strings.ToLower(b.Txid)); err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
+	// verify the tx exists before tracking it, else the seed loop would retry
+	// a nonexistent txid forever
+	txid := strings.ToLower(b.Txid)
+	tx, err := s.rpc.RawTx(r.Context(), txid)
+	if err != nil {
+		if btc.IsNotFound(err) {
+			writeErr(w, http.StatusBadRequest, errors.New("txid not found on chain (neither confirmed nor in mempool)"))
+			return
+		}
+		writeErr(w, http.StatusBadGateway, fmt.Errorf("bitcoind lookup failed: %w", err))
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]string{"added": b.Txid})
+	// confirmed seeds only: an unconfirmed seed can evaporate via RBF and
+	// leave phantom watching rows; spends are block-sync detected anyway, so
+	// tracking gains nothing before confirmation
+	if tx.BlockHeight == 0 {
+		writeErr(w, http.StatusConflict, errors.New("tx is unconfirmed; add it after confirmation"))
+		return
+	}
+	if err := s.st.AddCaseTx(r.Context(), id, txid); err != nil {
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			writeErr(w, http.StatusNotFound, errors.New("case not found"))
+		case errors.Is(err, store.ErrDuplicate):
+			writeErr(w, http.StatusConflict, errors.New("tx already tracked in this case"))
+		default:
+			writeErr(w, http.StatusInternalServerError, err)
+		}
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]string{"added": txid})
 }
 
 func (s *Server) deleteCaseTx(w http.ResponseWriter, r *http.Request) {
@@ -278,11 +304,13 @@ func (s *Server) deleteCaseTx(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	if err := s.st.DeleteCaseTx(r.Context(), id, r.PathValue("txid")); err != nil {
+	// add normalizes to lowercase, so delete must too or it silently no-ops
+	txid := strings.ToLower(r.PathValue("txid"))
+	if err := s.st.DeleteCaseTx(r.Context(), id, txid); err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"deleted": r.PathValue("txid")})
+	writeJSON(w, http.StatusOK, map[string]string{"deleted": txid})
 }
 
 func (s *Server) listChannels(w http.ResponseWriter, r *http.Request) {

@@ -180,6 +180,9 @@ func (s *Server) graphRoots(ctx context.Context, q url.Values) ([]string, error)
 	if txid == "" {
 		return nil, errors.New("case_id or txid required")
 	}
+	if !isTxid(txid) {
+		return nil, errors.New("txid must be 64 hex chars")
+	}
 	return []string{txid}, nil
 }
 
