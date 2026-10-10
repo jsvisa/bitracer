@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   api,
   mempoolTx,
@@ -11,9 +11,26 @@ import {
 } from './api'
 import { GraphView } from './GraphView'
 
+type Tab = 'txs' | 'channels' | 'graph' | 'alerts'
+
+// parseHash reads deep links of the form #case=2&tab=graph (used by
+// notify messages that link to a case's fund-flow graph). embed=1
+// strips all dashboard chrome — the notify snapshot loads that view.
+function parseHash(): { caseId: number | null; tab: Tab | null; embed: boolean } {
+  const h = new URLSearchParams(window.location.hash.replace(/^#/, ''))
+  const id = parseInt(h.get('case') || '', 10)
+  const tab = h.get('tab') as Tab | null
+  return {
+    caseId: Number.isFinite(id) && id > 0 ? id : null,
+    tab: tab === 'txs' || tab === 'channels' || tab === 'graph' || tab === 'alerts' ? tab : null,
+    embed: h.get('embed') === '1',
+  }
+}
+
 export function App() {
+  const initial = useMemo(parseHash, [])
   const [cases, setCases] = useState<Case[]>([])
-  const [selected, setSelected] = useState<number | null>(null)
+  const [selected, setSelected] = useState<number | null>(initial.caseId)
   const [showChannels, setShowChannels] = useState(false)
 
   const refreshCases = useCallback(async () => {
@@ -28,6 +45,20 @@ export function App() {
     const t = setInterval(() => refreshCases().catch(() => {}), 15000)
     return () => clearInterval(t)
   }, [refreshCases])
+
+  // snapshot/deep-link embed: the graph canvas alone, no dashboard chrome
+  if (initial.embed && selected != null) {
+    return (
+      <div className="graph-embed">
+        <GraphTab
+          caseId={selected}
+          txs={[]}
+          minSats={cases.find((c) => c.id === selected)?.min_sats ?? null}
+          embed
+        />
+      </div>
+    )
+  }
 
   return (
     <div className="app">
@@ -96,6 +127,7 @@ export function App() {
               key={selected}
               id={selected}
               minSats={cases.find((c) => c.id === selected)?.min_sats ?? null}
+              initialTab={initial.tab}
               onChanged={refreshCases}
             />
           )}
@@ -254,21 +286,26 @@ function NewCaseForm({ onCreated }: { onCreated: (c: Case) => void }) {
   )
 }
 
-type Tab = 'txs' | 'channels' | 'graph' | 'alerts'
-
 function CaseDetail({
   id,
   minSats,
+  initialTab,
   onChanged,
 }: {
   id: number
   minSats: number | null
+  initialTab: Tab | null
   onChanged: () => void
 }) {
-  const [tab, setTab] = useState<Tab>('txs')
+  const [tab, setTab] = useState<Tab>(initialTab ?? 'txs')
   const [txs, setTxs] = useState<CaseTx[]>([])
   const [channels, setChannels] = useState<Channel[]>([])
   const [alerts, setAlerts] = useState<Alert[]>([])
+
+  // keep the location hash in sync so case graph links are shareable
+  useEffect(() => {
+    window.location.hash = `case=${id}&tab=${tab}`
+  }, [id, tab])
 
   const refresh = useCallback(async () => {
     const [t, c] = await Promise.all([api.listCaseTxs(id), api.listCaseChannels(id)])
@@ -656,10 +693,12 @@ function GraphTab({
   caseId,
   txs,
   minSats,
+  embed,
 }: {
   caseId: number
   txs: CaseTx[]
   minSats: number | null
+  embed?: boolean
 }) {
   const [depth, setDepth] = useState(6)
   const [data, setData] = useState<GraphData | null>(null)
@@ -689,27 +728,29 @@ function GraphTab({
 
   return (
     <div className="graph-wrap">
-      <form
-        className="row wrap"
-        onSubmit={(e) => {
-          e.preventDefault()
-          load(depth)
-        }}
-      >
-        <span>
-          case #{caseId}: {txs.length} tracked txhash{txs.length === 1 ? '' : 'es'}
-        </span>
-        <select value={depth} onChange={(e) => setDepth(parseInt(e.target.value))}>
-          {[3, 6, 10, 15, 20].map((d) => (
-            <option key={d} value={d}>
-              depth {d}
-            </option>
-          ))}
-        </select>
-        <button type="submit" disabled={loading}>
-          {loading ? 'drawing…' : 'redraw'}
-        </button>
-      </form>
+      {!embed && (
+        <form
+          className="row wrap"
+          onSubmit={(e) => {
+            e.preventDefault()
+            load(depth)
+          }}
+        >
+          <span>
+            case #{caseId}: {txs.length} tracked txhash{txs.length === 1 ? '' : 'es'}
+          </span>
+          <select value={depth} onChange={(e) => setDepth(parseInt(e.target.value))}>
+            {[3, 6, 10, 15, 20].map((d) => (
+              <option key={d} value={d}>
+                depth {d}
+              </option>
+            ))}
+          </select>
+          <button type="submit" disabled={loading}>
+            {loading ? 'drawing…' : 'redraw'}
+          </button>
+        </form>
+      )}
       {err && <p className="err">{err}</p>}
       {data == null ? (
         <p className="empty">{loading ? 'drawing case fund flow…' : 'no graph data'}</p>

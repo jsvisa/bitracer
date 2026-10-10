@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 
+	"github.com/jsvisa/bitracer/internal/casegraph"
 	"github.com/jsvisa/bitracer/internal/notify"
 	"github.com/jsvisa/bitracer/internal/store"
 )
@@ -22,6 +23,11 @@ func NotifyCase(ctx context.Context, st *store.Store, caseID int64, msg notify.M
 			continue
 		}
 		ns = append(ns, n)
+	}
+	// image-capable channels also get the case's current fund-flow graph;
+	// a failed build/render degrades to a text-only notification
+	if len(msg.PNG) == 0 {
+		msg.PNG = casegraph.CaseGraphPNG(ctx, st, caseID)
 	}
 	notify.SendAll(ctx, ns, msg)
 }

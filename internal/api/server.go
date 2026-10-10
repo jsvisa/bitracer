@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jsvisa/bitracer/internal/btc"
+	"github.com/jsvisa/bitracer/internal/casegraph"
 	"github.com/jsvisa/bitracer/internal/labeler"
 	"github.com/jsvisa/bitracer/internal/notify"
 	"github.com/jsvisa/bitracer/internal/store"
@@ -70,6 +71,9 @@ type channelBody struct {
 	Name   string          `json:"name"`
 	Type   string          `json:"type"`
 	Config json.RawMessage `json:"config"`
+	// CaseID is test-only: when set, the test message carries that
+	// case's fund-flow graph image.
+	CaseID int64 `json:"case_id,omitempty"`
 }
 
 type caseBody struct {
@@ -362,7 +366,14 @@ func (s *Server) testChannel(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	if err := n.Send(r.Context(), notify.TestMessage()); err != nil {
+	msg := notify.TestMessage()
+	if b.CaseID > 0 {
+		msg.CaseID = b.CaseID
+		if png := casegraph.CaseGraphPNG(r.Context(), s.st, b.CaseID); len(png) > 0 {
+			msg.PNG = png
+		}
+	}
+	if err := n.Send(r.Context(), msg); err != nil {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("test message failed: %w", err))
 		return
 	}
