@@ -19,6 +19,7 @@ import (
 	"github.com/jsvisa/bitracer/internal/etl"
 	"github.com/jsvisa/bitracer/internal/labeler"
 	"github.com/jsvisa/bitracer/internal/labels"
+	"github.com/jsvisa/bitracer/internal/notify"
 	"github.com/jsvisa/bitracer/internal/store"
 	"github.com/jsvisa/bitracer/web"
 )
@@ -30,6 +31,7 @@ func main() {
 		os.Exit(2)
 	}
 	cfg := config.Load()
+	notify.DashboardBase = cfg.PublicURL
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -118,8 +120,11 @@ Environment:
   BITRACER_FANOUT_ADDRS (stop on spender txs reaching N distinct addresses, default 0 = off),
   BITRACER_FANIN_COUNT (stop when N distinct flows converge on one address,
                         default 5; suspected service sink),
-  BITRACER_DECAY_PCT (stop branch outputs below this %% of the case's largest
+	BITRACER_DECAY_PCT (stop branch outputs below this %% of the case's largest
                       seed output, default 1; 0 = off),
+  BITRACER_PUBLIC_URL (dashboard base URL; when set, notifications that
+                       cannot carry the case-graph image link to
+                       {URL}/#case=N&tab=graph),
   BITRACER_SEED_LABELS (JSON file of known entities to preload:
                         {"addr": {"label": "...", "kind": "cex|mixer|..."}})
 `)

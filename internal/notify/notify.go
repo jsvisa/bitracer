@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +19,11 @@ import (
 const ExplorerTxBase = "https://mempool.space/tx/"
 
 func ExplorerTxURL(txid string) string { return ExplorerTxBase + txid }
+
+// DashboardBase is the dashboard's public base URL (BITRACER_PUBLIC_URL);
+// when set, channels that cannot carry the case-graph image include a
+// link to the case's graph view instead.
+var DashboardBase string
 
 var hexTxRe = regexp.MustCompile(`\b[0-9a-fA-F]{64}\b`)
 
@@ -115,6 +121,16 @@ func (m Message) fields() [][2]string {
 	}
 	add("parking", m.parkingLine())
 	return f
+}
+
+// graphLink returns the dashboard URL for the case's fund-flow graph —
+// included when no PNG is attached (image-incapable channel or a failed
+// render) and a public dashboard URL is configured.
+func (m Message) graphLink() string {
+	if DashboardBase == "" || m.CaseID <= 0 || len(m.PNG) > 0 {
+		return ""
+	}
+	return strings.TrimRight(DashboardBase, "/") + "/#case=" + strconv.FormatInt(m.CaseID, 10) + "&tab=graph"
 }
 
 func shortTx(txid string) string {
@@ -290,6 +306,9 @@ func slackText(msg Message) string {
 	if msg.Txid != "" && !strings.Contains(headline, msg.Txid) && !strings.Contains(headline, shortTx(msg.Txid)) {
 		fmt.Fprintf(&b, "*tx:* %s\n", linkTx(msg.Txid))
 	}
+	if u := msg.graphLink(); u != "" {
+		fmt.Fprintf(&b, "*graph:* <%s|view fund-flow graph>\n", u)
+	}
 	// Collapse every full txid in the headline to a linked head...tail form.
 	headline = hexTxRe.ReplaceAllStringFunc(headline, func(m string) string {
 		return linkTx(strings.ToLower(m))
@@ -352,6 +371,9 @@ func (t *Telegram) Send(ctx context.Context, msg Message) error {
 	if msg.Txid != "" {
 		fmt.Fprintf(&b, "<b>tx:</b> <a href=\"%s\">%s</a>\n", ExplorerTxURL(msg.Txid), shortTx(msg.Txid))
 	}
+	if u := msg.graphLink(); u != "" {
+		fmt.Fprintf(&b, "<b>graph:</b> <a href=\"%s\">view fund-flow graph</a>\n", u)
+	}
 	return postJSON(ctx, "https://api.telegram.org/bot"+t.token+"/sendMessage",
 		map[string]string{"chat_id": t.chat, "text": strings.TrimSpace(b.String()), "parse_mode": "HTML"})
 }
@@ -389,6 +411,9 @@ func (l *Lark) Send(ctx context.Context, msg Message) error {
 	}
 	if msg.Txid != "" {
 		fmt.Fprintf(&b, "- **tx:** [%s](%s)\n", shortTx(msg.Txid), ExplorerTxURL(msg.Txid))
+	}
+	if u := msg.graphLink(); u != "" {
+		fmt.Fprintf(&b, "- **graph:** [view fund-flow graph](%s)\n", u)
 	}
 	template := "red"
 	if IsTerminalKind(msg.Kind) {

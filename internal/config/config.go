@@ -15,6 +15,7 @@ type Config struct {
 	RPCPass              string
 	Listen               string
 	WebDir               string
+	PublicURL            string
 	BlocksecLabelURL     string
 	BlocksecLabelAPIKEY  string
 	BlocksecLabelChainID int
@@ -35,6 +36,7 @@ func Load() Config {
 		RPCPass:              env("BTC_RPC_PASS", ""),
 		Listen:               env("BITRACER_LISTEN", ":8080"),
 		WebDir:               env("BITRACER_WEB_DIR", "web/dist"),
+		PublicURL:            env("BITRACER_PUBLIC_URL", ""),
 		BlocksecLabelURL:     env("BLOCKSEC_LABEL_URL", labels.DefaultAPIURL),
 		BlocksecLabelAPIKEY:  env("BLOCKSEC_LABEL_APIKEY", ""),
 		BlocksecLabelChainID: int(envInt("BLOCKSEC_LABEL_CHAIN_ID", labels.BitcoinChainID)),

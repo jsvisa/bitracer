@@ -166,7 +166,11 @@ Alerts carry the case's fund-flow graph rendered as a PNG (same layout as
 the dashboard, capped at 80 nodes): Telegram posts it via `sendPhoto`,
 Slack uploads it when a bot token is configured, Lark embeds it when app
 credentials are configured — channels without those credentials get the
-plain text message.
+plain text message. When `BITRACER_PUBLIC_URL` is set, image-less
+notifications instead link to `{PUBLIC_URL}/#case=N&tab=graph` (the
+dashboard deep-links `#case=N&tab=` to a case's graph tab), and
+`POST /api/channels/test` accepts an optional `case_id` to send a test
+message carrying that case's graph.
 
 ## Semantics & caveats
 

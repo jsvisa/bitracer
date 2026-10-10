@@ -295,3 +295,38 @@ func shortAddr(s string) string {
 	}
 	return s[:12] + "…"
 }
+
+// CaseGraphPNG renders the case's current fund-flow graph for notify
+// messages (bounded depth so the chart stays readable); any failure
+// returns nil and the notification degrades to text-only.
+func CaseGraphPNG(ctx context.Context, st *store.Store, caseID int64) []byte {
+	c, err := st.GetCase(ctx, caseID)
+	if err != nil {
+		return nil
+	}
+	txs, err := st.ListCaseTxs(ctx, caseID)
+	if err != nil || len(txs) == 0 {
+		return nil
+	}
+	roots := make([]string, 0, len(txs))
+	for _, t := range txs {
+		roots = append(roots, t.Txid)
+	}
+	var minSats int64
+	if c.MinSats != nil {
+		minSats = *c.MinSats
+	}
+	g, err := Build(ctx, st, nil, roots, caseImageDepth, minSats)
+	if err != nil {
+		return nil
+	}
+	png, err := Render(g)
+	if err != nil {
+		return nil
+	}
+	return png
+}
+
+// caseImageDepth bounds the walk used for the notify image so it stays
+// readable regardless of the case's tracking depth cap.
+const caseImageDepth = 4
