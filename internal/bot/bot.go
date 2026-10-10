@@ -75,21 +75,22 @@ func New(ctx context.Context, st *store.Store, cfg config.Config) *Bot {
 }
 
 // Run long-polls Telegram until the context is cancelled. Questions are
-// answered concurrently across chats but serialized within one chat, so
-// replies keep their order.
+// answered concurrently across chats but serialized within one chat via a
+// FIFO worker per chat, so replies keep their order.
 func (b *Bot) Run(ctx context.Context) error {
 	b.skipBacklog(ctx)
 	var mu sync.Mutex
-	chatLocks := map[int64]*sync.Mutex{}
-	lockFor := func(chat int64) *sync.Mutex {
+	workers := map[int64]chan *tgMessage{}
+	workerFor := func(chat int64) chan *tgMessage {
 		mu.Lock()
 		defer mu.Unlock()
-		l, ok := chatLocks[chat]
+		w, ok := workers[chat]
 		if !ok {
-			l = &sync.Mutex{}
-			chatLocks[chat] = l
+			w = make(chan *tgMessage, chatQueueLen)
+			go b.chatWorker(ctx, w)
+			workers[chat] = w
 		}
-		return l
+		return w
 	}
 	for {
 		ups, err := b.tg.Updates(ctx, b.offset+1, 25)
@@ -112,18 +113,35 @@ func (b *Bot) Run(ctx context.Context) error {
 			if u.Message == nil || strings.TrimSpace(u.Message.Text) == "" {
 				continue
 			}
-			m, l := u.Message, lockFor(u.Message.Chat.ID)
+			select {
+			case workerFor(u.Message.Chat.ID) <- u.Message:
+			default:
+				slog.Warn("bot: chat queue full, dropping message", "chat_id", u.Message.Chat.ID)
+			}
+		}
+	}
+}
+
+// chatQueueLen bounds how many questions may wait in one chat before new
+// ones are dropped instead of piling up behind a stuck LLM.
+const chatQueueLen = 32
+
+// chatWorker drains one chat's queue in arrival order. A panic in handling
+// must not take down serve.
+func (b *Bot) chatWorker(ctx context.Context, ch chan *tgMessage) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case m := <-ch:
 			mctx, cancel := context.WithTimeout(ctx, answerTimeout)
-			go func() {
+			func() {
 				defer cancel()
-				defer l.Unlock()
-				// A panic here must not take down serve.
 				defer func() {
 					if p := recover(); p != nil {
 						slog.Error("bot: panic handling message", "chat_id", m.Chat.ID, "panic", p)
 					}
 				}()
-				l.Lock()
 				b.handle(mctx, m)
 			}()
 		}

@@ -491,6 +491,9 @@ func (b *Bot) dispatch(ctx context.Context, name, rawArgs string, chatID int64, 
 		if err = json.Unmarshal([]byte(rawArgs), &a); err != nil {
 			return fail(err)
 		}
+		if !validTerminalKind(a.Kind) {
+			return fail(fmt.Errorf("kind must be one of cex, mixer, gambling, darknet, service, manual"))
+		}
 		if err = st.SetAddressTerminal(ctx, a.Address, a.Kind); err != nil {
 			return fail(err)
 		}
@@ -528,6 +531,16 @@ func caseTxIDs(txs []store.CaseTx) []string {
 		out = append(out, t.Txid)
 	}
 	return out
+}
+
+// validTerminalKind mirrors the kinds the dashboard/API accept for
+// terminal entities.
+func validTerminalKind(k string) bool {
+	switch k {
+	case "cex", "mixer", "gambling", "darknet", "service", "manual":
+		return true
+	}
+	return false
 }
 
 func isTxid(s string) bool {

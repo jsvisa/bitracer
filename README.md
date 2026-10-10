@@ -137,7 +137,7 @@ BITRACER_BOT_TELEGRAM_CHATS  chat ids allowed to ask (defaults to the chat_ids
                              of configured telegram notify channels)
 BITRACER_BOT_ADMIN_CHATS     chat ids allowed to run write actions
 BITRACER_BOT_LLM_URL         OpenAI-compatible base url (default https://api.openai.com/v1)
-BITRACER_BOT_LLM_KEY         LLM API key
+BITRACER_BOT_LLM_KEY         LLM API key (any non-empty value for local Ollama)
 BITRACER_BOT_LLM_MODEL       model (default gpt-4o-mini)
 ```
 
