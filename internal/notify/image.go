@@ -46,7 +46,7 @@ func (t *Telegram) sendDocument(ctx context.Context, msg Message) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("telegram sendDocument http %d", resp.StatusCode)
 	}
@@ -91,8 +91,8 @@ func (s *Slack) sendImage(ctx context.Context, msg Message) error {
 	if err != nil {
 		return err
 	}
-	io.Copy(io.Discard, resp.Body)
-	resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("slack upload http %d", resp.StatusCode)
 	}
@@ -128,7 +128,7 @@ func slackAPI(ctx context.Context, token, method string, form map[string]string,
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return err
@@ -174,7 +174,7 @@ func (l *Lark) uploadImage(ctx context.Context, png []byte) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var out struct {
 		Code int    `json:"code"`
 		Msg  string `json:"msg"`
@@ -225,7 +225,7 @@ func postJSONResp(ctx context.Context, url string, payload, out any) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("http %d", resp.StatusCode)
 	}

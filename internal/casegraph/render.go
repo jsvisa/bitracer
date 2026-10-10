@@ -382,7 +382,7 @@ func (c canvas) triangle(x0, y0, x1, y1, x2, y2 float64, col color.Color) {
 			d3 := sign(x2, y2, x0, y0, fx, fy)
 			neg := d1 < 0 || d2 < 0 || d3 < 0
 			pos := d1 > 0 || d2 > 0 || d3 > 0
-			if !(neg && pos) {
+			if !neg || !pos {
 				c.img.Set(px, py, col)
 			}
 		}

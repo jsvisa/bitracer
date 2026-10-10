@@ -334,7 +334,7 @@ func SnapshotPNG(ctx context.Context, caseID int64) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 	out := filepath.Join(dir, "shot.png")
 	url := strings.TrimRight(PublicURL, "/") + "/#case=" + strconv.FormatInt(caseID, 10) + "&tab=graph&embed=1"
 	base := []string{
