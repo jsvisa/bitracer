@@ -72,7 +72,7 @@ func (c *Client) Call(ctx context.Context, method string, params ...any) (json.R
 	if err != nil {
 		return nil, err
 	}
-	defer httpResp.Body.Close()
+	defer func() { _ = httpResp.Body.Close() }()
 	if httpResp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("bitcoind http %d", httpResp.StatusCode)
 	}

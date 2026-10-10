@@ -142,7 +142,7 @@ func (s *Store) DeleteCaseTx(ctx context.Context, caseID int64, txid string) err
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 	if _, err := tx.Exec(ctx,
 		`DELETE FROM case_txs WHERE case_id = $1 AND txid = $2`, caseID, txid); err != nil {
 		return err

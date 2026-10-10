@@ -53,7 +53,10 @@ interface Layout {
 type Sel = { kind: 'node' | 'edge'; id: string } | null
 
 const fmtBTC = (v: number) =>
-  `${v.toFixed(8).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '')} BTC`
+  `${v
+    .toFixed(8)
+    .replace(/(\.\d*?)0+$/, '$1')
+    .replace(/\.$/, '')} BTC`
 
 const fmtTime = (t: number | undefined) =>
   t && t > 0 ? new Date(t * 1000).toLocaleString('sv-SE', { hour12: false }) : ''
@@ -132,7 +135,15 @@ function collapse(data: GraphData): { nodes: FlowNode[]; edges: FlowEdge[] } {
         highlighted: data.txids.includes(txid),
       })
       for (const o of outs) {
-        edges.push({ id: `${tx}->${o.to}`, source: tx, target: o.to, value: o.value, height: o.height, time: o.time, txid })
+        edges.push({
+          id: `${tx}->${o.to}`,
+          source: tx,
+          target: o.to,
+          value: o.value,
+          height: o.height,
+          time: o.time,
+          txid,
+        })
       }
     } else if (outs.length === 0) {
       nodes.set(tx, {
@@ -147,14 +158,30 @@ function collapse(data: GraphData): { nodes: FlowNode[]; edges: FlowEdge[] } {
         highlighted: false,
       })
       for (const i of ins) {
-        edges.push({ id: `${i.from}->${tx}`, source: i.from, target: tx, value: i.value, height: i.height, time: i.time, txid })
+        edges.push({
+          id: `${i.from}->${tx}`,
+          source: i.from,
+          target: tx,
+          value: i.value,
+          height: i.height,
+          time: i.time,
+          txid,
+        })
       }
     } else {
       for (const i of ins) {
         for (const o of outs) {
           // change returned to the spending address: skip the self-loop
           if (o.to === i.from) continue
-          edges.push({ id: `${i.from}->${o.to}@${tx}`, source: i.from, target: o.to, value: o.value, height: i.height, time: i.time, txid })
+          edges.push({
+            id: `${i.from}->${o.to}@${tx}`,
+            source: i.from,
+            target: o.to,
+            value: o.value,
+            height: i.height,
+            time: i.time,
+            txid,
+          })
         }
       }
     }
@@ -211,8 +238,7 @@ function buildLayout(flow: { nodes: FlowNode[]; edges: FlowEdge[] }): Layout {
     const u = 0.45
     const v = 1 - u
     const bx = v * v * v * x0 + 3 * v * v * u * mx + 3 * v * u * u * mx + u * u * u * x1
-    const by =
-      v * v * v * y0 + 3 * v * v * u * y0 + 3 * v * u * u * y1 + u * u * u * y1
+    const by = v * v * v * y0 + 3 * v * v * u * y0 + 3 * v * u * u * y1 + u * u * u * y1
     const want = edgeLabel(e).length * 6.8
     const fontSize = Math.max(9, Math.min(13, (13 * (x1 - x0 - 20)) / Math.max(want, 1)))
     edgesLaid.push({ ...e, path, lx: bx, ly: by, fontSize })
@@ -468,65 +494,68 @@ export function GraphView({ data }: { data: GraphData | null }) {
                     height={n.h}
                     rx={10}
                     fill={CARD}
-                    stroke={
-                      selected ? '#ffc37a' : n.highlighted ? ORANGE : CARD_BORDER
-                    }
+                    stroke={selected ? '#ffc37a' : n.highlighted ? ORANGE : CARD_BORDER}
                     strokeWidth={selected ? 2.5 : n.highlighted ? 2 : 1}
                   />
-                {n.kind === 'address' ? (
-                  <>
-                    <circle cx={24} cy={n.h / 2} r={14} fill={ORANGE} />
-                    <text
-                      x={24}
-                      y={n.h / 2 + 1}
-                      textAnchor="middle"
-                      dominantBaseline="central"
-                      fontSize={15}
-                      fontWeight={700}
-                      fill="#ffffff"
-                    >
-                      ₿
-                    </text>
-                    <text
-                      x={46}
-                      y={n.cexName ? n.h / 2 - 8 : n.h / 2 + 1}
-                      dominantBaseline="central"
-                      className="graph-addr"
-                    >
-                      {n.label}
-                    </text>
-                    {n.cexName && (
+                  {n.kind === 'address' ? (
+                    <>
+                      <circle cx={24} cy={n.h / 2} r={14} fill={ORANGE} />
+                      <text
+                        x={24}
+                        y={n.h / 2 + 1}
+                        textAnchor="middle"
+                        dominantBaseline="central"
+                        fontSize={15}
+                        fontWeight={700}
+                        fill="#ffffff"
+                      >
+                        ₿
+                      </text>
                       <text
                         x={46}
-                        y={n.h / 2 + 12}
+                        y={n.cexName ? n.h / 2 - 8 : n.h / 2 + 1}
                         dominantBaseline="central"
-                        fontSize={11}
-                        fontWeight={600}
-                        fill={ORANGE}
+                        className="graph-addr"
                       >
-                        {n.cexName}
+                        {n.label}
                       </text>
-                    )}
-                  </>
-                ) : (
-                  <>
-                    <rect x={8} y={n.h / 2 - 11} width={22} height={22} rx={6} fill="#3d4148" />
-                    <text
-                      x={19}
-                      y={n.h / 2 + 1}
-                      textAnchor="middle"
-                      dominantBaseline="central"
-                      fontSize={9}
-                      fontWeight={700}
-                      fill={MUTED}
-                    >
-                      TX
-                    </text>
-                    <text x={38} y={n.h / 2 + 1} dominantBaseline="central" className="graph-addr">
-                      {n.label}
-                    </text>
-                   </>
-                 )}
+                      {n.cexName && (
+                        <text
+                          x={46}
+                          y={n.h / 2 + 12}
+                          dominantBaseline="central"
+                          fontSize={11}
+                          fontWeight={600}
+                          fill={ORANGE}
+                        >
+                          {n.cexName}
+                        </text>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <rect x={8} y={n.h / 2 - 11} width={22} height={22} rx={6} fill="#3d4148" />
+                      <text
+                        x={19}
+                        y={n.h / 2 + 1}
+                        textAnchor="middle"
+                        dominantBaseline="central"
+                        fontSize={9}
+                        fontWeight={700}
+                        fill={MUTED}
+                      >
+                        TX
+                      </text>
+                      <text
+                        x={38}
+                        y={n.h / 2 + 1}
+                        dominantBaseline="central"
+                        className="graph-addr"
+                      >
+                        {n.label}
+                      </text>
+                    </>
+                  )}
                 </g>
               )
             })}
@@ -555,7 +584,9 @@ export function GraphView({ data }: { data: GraphData | null }) {
           <button onClick={() => zoomBy(1 / 1.2)}>−</button>
           <span>{Math.round(view.k * 100)}%</span>
           <button onClick={() => zoomBy(1.2)}>+</button>
-          <button onClick={fit} title="fit">⤢</button>
+          <button onClick={fit} title="fit">
+            ⤢
+          </button>
         </div>
       )}
     </div>

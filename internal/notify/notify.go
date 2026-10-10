@@ -1,18 +1,17 @@
 package notify
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/jsvisa/bitracer/internal/btc"
+	"github.com/jsvisa/bitracer/internal/httpx"
 )
 
 const ExplorerTxBase = "https://mempool.space/tx/"
@@ -114,20 +113,6 @@ func (m Message) fields() [][2]string {
 	return f
 }
 
-func shortTx(txid string) string {
-	if len(txid) <= 12 {
-		return txid
-	}
-	return txid[:10] + "…"
-}
-
-func shortAddr(addr string) string {
-	if len(addr) <= 20 {
-		return addr
-	}
-	return addr[:8] + "…" + addr[len(addr)-6:]
-}
-
 type Notifier interface {
 	Name() string
 	Send(ctx context.Context, msg Message) error
@@ -192,22 +177,12 @@ func SendAll(ctx context.Context, notifiers []Notifier, msg Message) {
 }
 
 func postJSON(ctx context.Context, url string, payload any) error {
-	body, err := json.Marshal(payload)
+	status, _, err := httpx.Request{URL: url, Body: payload}.Do(ctx, nil)
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return fmt.Errorf("http %d", resp.StatusCode)
+	if status >= 300 {
+		return fmt.Errorf("http %d", status)
 	}
 	return nil
 }
@@ -261,7 +236,7 @@ func (s *Slack) Send(ctx context.Context, msg Message) error {
 	}
 	// Only add a separate tx field when the headline does not already
 	// reference this message's txid (full or short form).
-	if msg.Txid != "" && !strings.Contains(headline, msg.Txid) && !strings.Contains(headline, shortTx(msg.Txid)) {
+	if msg.Txid != "" && !strings.Contains(headline, msg.Txid) && !strings.Contains(headline, btc.ShortTxid(msg.Txid)) {
 		fmt.Fprintf(&b, "*tx:* %s\n", linkTx(msg.Txid))
 	}
 	// Collapse every full txid in the headline to a linked head...tail form.
@@ -322,7 +297,7 @@ func (t *Telegram) Send(ctx context.Context, msg Message) error {
 		fmt.Fprintf(&b, "<b>%s:</b> %s\n", escapeHTML(f[0]), escapeHTML(f[1]))
 	}
 	if msg.Txid != "" {
-		fmt.Fprintf(&b, "<b>tx:</b> <a href=\"%s\">%s</a>\n", ExplorerTxURL(msg.Txid), shortTx(msg.Txid))
+		fmt.Fprintf(&b, "<b>tx:</b> <a href=\"%s\">%s</a>\n", ExplorerTxURL(msg.Txid), btc.ShortTxid(msg.Txid))
 	}
 	return postJSON(ctx, "https://api.telegram.org/bot"+t.token+"/sendMessage",
 		map[string]string{"chat_id": t.chat, "text": strings.TrimSpace(b.String()), "parse_mode": "HTML"})
@@ -343,7 +318,7 @@ func (l *Lark) Send(ctx context.Context, msg Message) error {
 		fmt.Fprintf(&b, "- **%s:** %s\n", f[0], f[1])
 	}
 	if msg.Txid != "" {
-		fmt.Fprintf(&b, "- **tx:** [%s](%s)\n", shortTx(msg.Txid), ExplorerTxURL(msg.Txid))
+		fmt.Fprintf(&b, "- **tx:** [%s](%s)\n", btc.ShortTxid(msg.Txid), ExplorerTxURL(msg.Txid))
 	}
 	template := "red"
 	if IsTerminalKind(msg.Kind) {

@@ -31,7 +31,9 @@ func (s *Store) Migrate(ctx context.Context) error {
 	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, migrateLockKey); err != nil {
 		return err
 	}
-	defer conn.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, migrateLockKey)
+	defer func() {
+		_, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, migrateLockKey)
+	}()
 	for _, q := range migrateStmts {
 		if _, err := conn.Exec(ctx, q); err != nil {
 			return err

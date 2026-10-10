@@ -295,7 +295,7 @@ func withStatic(dir string, apiHandler http.Handler) http.Handler {
 		}
 		if r.URL.Path != "/" {
 			if f, err := fsys.Open(strings.TrimPrefix(r.URL.Path, "/")); err == nil {
-				f.Close()
+				_ = f.Close()
 				fileServer.ServeHTTP(w, r)
 				return
 			}

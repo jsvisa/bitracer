@@ -257,7 +257,7 @@ func (s *Server) addCaseTx(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	if !isTxid(b.Txid) {
+	if !btc.IsTxid(b.Txid) {
 		writeErr(w, http.StatusBadRequest, errors.New("txid must be 64 hex chars"))
 		return
 	}
@@ -475,18 +475,6 @@ func (s *Server) syncStatus(w http.ResponseWriter, r *http.Request) {
 		body.LagBlocks = &lag
 	}
 	writeJSON(w, http.StatusOK, body)
-}
-
-func isTxid(s string) bool {
-	if len(s) != 64 {
-		return false
-	}
-	for _, c := range s {
-		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') {
-			return false
-		}
-	}
-	return true
 }
 
 func validateChannel(typ string, cfg json.RawMessage) (any, error) {
