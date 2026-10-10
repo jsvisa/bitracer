@@ -370,9 +370,9 @@ func (e *ETL) addWatchedFromTx(ctx context.Context, caseID int64, minSats int64,
 
 // checkFanin stops addresses that many distinct flows converge on — the
 // signature of an unlabeled service/exchange sink.
-func (e *ETL) checkFanin(ctx context.Context, caseID int64, inserted []store.WatchedRow) error {
+func (e *ETL) checkFanin(ctx context.Context, caseID int64, rows []store.WatchedRow) error {
 	seen := map[string]bool{}
-	for _, r := range inserted {
+	for _, r := range rows {
 		if r.Address == "" || seen[r.Address] {
 			continue
 		}
@@ -554,9 +554,17 @@ func (e *ETL) seedOne(ctx context.Context, seed store.CaseSeed) error {
 			outs = append(outs, store.IndexedOut{Txid: seed.Txid, Vout: int32(vout.N), Address: vout.ScriptPubKey.Address, ValueSats: btc.Sats(vout.Value)})
 		}
 	} else {
-		if h, err := e.st.TxHeight(ctx, seed.Txid); err == nil {
-			height = h
+		h, err := e.st.TxHeight(ctx, seed.Txid)
+		if err != nil {
+			return err
 		}
+		height = h
+	}
+	// confirmed seeds only: a height-0 row is indistinguishable from an
+	// evaporated RBF seed (and the migrator purges height-0 rows) — fail and
+	// let the next tick retry
+	if height <= 0 {
+		return fmt.Errorf("seed tx %s has no confirmed block height", seed.Txid)
 	}
 	if err := e.addWatchedFromTx(ctx, seed.CaseID, seed.MinSats, seed.DepthCap, seed.BranchCap, seed.Txid, outs, 0, height); err != nil {
 		return err
