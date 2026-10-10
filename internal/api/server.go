@@ -277,7 +277,14 @@ func (s *Server) addCaseTx(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.st.AddCaseTx(r.Context(), id, txid); err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			writeErr(w, http.StatusNotFound, errors.New("case not found"))
+		case errors.Is(err, store.ErrDuplicate):
+			writeErr(w, http.StatusConflict, errors.New("tx already tracked in this case"))
+		default:
+			writeErr(w, http.StatusInternalServerError, err)
+		}
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]string{"added": txid})
@@ -289,11 +296,13 @@ func (s *Server) deleteCaseTx(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	if err := s.st.DeleteCaseTx(r.Context(), id, r.PathValue("txid")); err != nil {
+	// add normalizes to lowercase, so delete must too or it silently no-ops
+	txid := strings.ToLower(r.PathValue("txid"))
+	if err := s.st.DeleteCaseTx(r.Context(), id, txid); err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"deleted": r.PathValue("txid")})
+	writeJSON(w, http.StatusOK, map[string]string{"deleted": txid})
 }
 
 func (s *Server) listChannels(w http.ResponseWriter, r *http.Request) {
