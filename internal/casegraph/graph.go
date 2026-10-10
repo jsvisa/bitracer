@@ -345,7 +345,7 @@ func SnapshotPNG(ctx context.Context, caseID int64) ([]byte, error) {
 	out := filepath.Join(dir, "shot.png")
 	url := strings.TrimRight(PublicURL, "/") + "/#case=" + strconv.FormatInt(caseID, 10) + "&tab=graph&embed=1"
 	base := []string{
-		"--disable-gpu", "--no-sandbox", "--hide-scrollbars",
+		"--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage", "--hide-scrollbars",
 		"--user-data-dir=" + filepath.Join(dir, "profile"),
 		"--window-size=1500,850",
 		"--force-device-scale-factor=2",

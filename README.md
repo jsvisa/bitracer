@@ -172,6 +172,13 @@ dashboard deep-links `#case=N&tab=` to a case's graph tab), and
 `POST /api/channels/test` accepts an optional `case_id` to send a test
 message carrying that case's graph.
 
+With `BITRACER_PUBLIC_URL` set and a Chrome/Chromium binary present
+(`BITRACER_CHROME` overrides; auto-detected otherwise), the notify image
+is a headless-Chrome snapshot of `{PUBLIC_URL}/#case=N&tab=graph&embed=1`
+— the exact dashboard rendering, canvas-only — falling back to the
+pure-Go renderer when Chrome or the dashboard is unavailable. The Docker
+image ships Chromium (`apk add chromium font-noto`) for this.
+
 ## Semantics & caveats
 
 - An output is watched only if `value >= case.min_sats` (or the daemon default);

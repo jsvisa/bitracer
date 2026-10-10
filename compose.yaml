@@ -28,6 +28,7 @@ services:
       BLOCKSEC_LABEL_URL: ${BLOCKSEC_LABEL_URL:-}
       BLOCKSEC_LABEL_APIKEY: ${BLOCKSEC_LABEL_APIKEY:-}
       BLOCKSEC_LABEL_CHAIN_ID: ${BLOCKSEC_LABEL_CHAIN_ID:--1}
+      BITRACER_PUBLIC_URL: ${BITRACER_PUBLIC_URL:-http://localhost:8080}
     command:
       - run
       - --start-block
