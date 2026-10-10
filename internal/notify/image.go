@@ -96,7 +96,7 @@ func (s *Slack) sendImage(ctx context.Context, msg Message) error {
 	// 3. finalize: this is the step that actually posts the file
 	form := map[string]string{
 		"files":           fmt.Sprintf(`[{"id":%q,"title":"case graph"}]`, up.FileID),
-		"initial_comment": slackText(msg),
+		"initial_comment": slackText(msg, true),
 	}
 	if s.channel != "" {
 		form["channels"] = s.channel

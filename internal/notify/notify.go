@@ -123,11 +123,12 @@ func (m Message) fields() [][2]string {
 	return f
 }
 
-// graphLink returns the dashboard URL for the case's fund-flow graph —
-// included when no PNG is attached (image-incapable channel or a failed
-// render) and a public dashboard URL is configured.
-func (m Message) graphLink() string {
-	if DashboardBase == "" || m.CaseID <= 0 || len(m.PNG) > 0 {
+// graphLink returns the dashboard URL for the case's fund-flow graph,
+// included whenever the receiving channel will not actually carry the
+// rendered PNG (no image support, missing credentials, or a failed
+// render). deliversImage reports whether this send really attaches it.
+func (m Message) graphLink(deliversImage bool) string {
+	if DashboardBase == "" || m.CaseID <= 0 || deliversImage {
 		return ""
 	}
 	return strings.TrimRight(DashboardBase, "/") + "/#case=" + strconv.FormatInt(m.CaseID, 10) + "&tab=graph"
@@ -288,7 +289,9 @@ func (s *Slack) Send(ctx context.Context, msg Message) error {
 
 // slackText renders the mrkdwn body shared by the webhook card and the
 // image-file comment: headline (txids linked) plus labeled fields.
-func slackText(msg Message) string {
+// deliversImage is false for the webhook path, which cannot carry the
+// graph image — those get a dashboard link instead.
+func slackText(msg Message, deliversImage bool) string {
 	var b strings.Builder
 	for _, f := range msg.fields() {
 		v := f[1]
@@ -306,7 +309,7 @@ func slackText(msg Message) string {
 	if msg.Txid != "" && !strings.Contains(headline, msg.Txid) && !strings.Contains(headline, shortTx(msg.Txid)) {
 		fmt.Fprintf(&b, "*tx:* %s\n", linkTx(msg.Txid))
 	}
-	if u := msg.graphLink(); u != "" {
+	if u := msg.graphLink(deliversImage); u != "" {
 		fmt.Fprintf(&b, "*graph:* <%s|view fund-flow graph>\n", u)
 	}
 	// Collapse every full txid in the headline to a linked head...tail form.
@@ -317,7 +320,7 @@ func slackText(msg Message) string {
 }
 
 func (s *Slack) sendWebhook(ctx context.Context, msg Message) error {
-	text := slackText(msg)
+	text := slackText(msg, false)
 	color := "#bf616a"
 	if IsTerminalKind(msg.Kind) {
 		color = "#a3be8c"
@@ -360,7 +363,11 @@ func (t *Telegram) Name() string { return "telegram" }
 
 func (t *Telegram) Send(ctx context.Context, msg Message) error {
 	if len(msg.PNG) > 0 {
-		return t.sendPhoto(ctx, msg)
+		if err := t.sendPhoto(ctx, msg); err == nil {
+			return nil
+		} else {
+			slog.Warn("telegram sendPhoto failed; sending text", "err", err)
+		}
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "<b>bitracer · %s</b>\n", kindLabel(msg))
@@ -371,7 +378,7 @@ func (t *Telegram) Send(ctx context.Context, msg Message) error {
 	if msg.Txid != "" {
 		fmt.Fprintf(&b, "<b>tx:</b> <a href=\"%s\">%s</a>\n", ExplorerTxURL(msg.Txid), shortTx(msg.Txid))
 	}
-	if u := msg.graphLink(); u != "" {
+	if u := msg.graphLink(false); u != "" {
 		fmt.Fprintf(&b, "<b>graph:</b> <a href=\"%s\">view fund-flow graph</a>\n", u)
 	}
 	return postJSON(ctx, "https://api.telegram.org/bot"+t.token+"/sendMessage",
@@ -412,7 +419,7 @@ func (l *Lark) Send(ctx context.Context, msg Message) error {
 	if msg.Txid != "" {
 		fmt.Fprintf(&b, "- **tx:** [%s](%s)\n", shortTx(msg.Txid), ExplorerTxURL(msg.Txid))
 	}
-	if u := msg.graphLink(); u != "" {
+	if u := msg.graphLink(imgKey != ""); u != "" {
 		fmt.Fprintf(&b, "- **graph:** [view fund-flow graph](%s)\n", u)
 	}
 	template := "red"
